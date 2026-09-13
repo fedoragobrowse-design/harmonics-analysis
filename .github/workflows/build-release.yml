@@ -1,0 +1,32 @@
+name: Build release assets
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -r windows-requirements.txt
+      - run: choco install ffmpeg -y --no-progress
+      - shell: pwsh
+        run: |
+          $ffmpeg = (Get-Command ffmpeg).Source
+          pyinstaller --noconfirm --clean --windowed --onefile --name "Harmonics Analysis" --add-binary "$ffmpeg;." harmonic-viewer.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Harmonics-Analysis-Windows
+          path: dist/Harmonics Analysis.exe
+  debian:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: chmod +x build-deb.sh && ./build-deb.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Harmonics-Analysis-Debian
+          path: harmonics-analysis_1.0.0_all.deb
