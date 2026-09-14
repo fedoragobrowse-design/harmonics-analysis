@@ -90,6 +90,14 @@ class PitchRegressionTests(unittest.TestCase):
         raw = struct.pack("<4h", -1000, -500, 500, 1000)
         self.assertEqual(len(VIEWER.resample_pcm_16le(raw, 24_000)), 16)
 
+    def test_analyze_rejects_incomplete_pcm_frame(self):
+        with self.assertRaises(ValueError):
+            VIEWER.analyze(b"\x00" * 16)
+
+    def test_precomputed_window_has_one_value_per_sample(self):
+        self.assertEqual(len(VIEWER.HANN_WINDOW), VIEWER.FRAME_SIZE)
+        self.assertEqual(VIEWER.MAX_BIN, int(VIEWER.MAX_FREQUENCY * VIEWER.FRAME_SIZE / VIEWER.SAMPLE_RATE))
+
     def test_pitch_lock_smooths_jitter_but_allows_large_range_changes(self):
         lock = VIEWER.PitchLock()
         self.assertAlmostEqual(lock.update(220.0, 0.9), 220.0)
@@ -119,6 +127,21 @@ class PitchRegressionTests(unittest.TestCase):
             with open(destination, "rb") as output:
                 self.assertEqual(output.read(), payload)
             self.assertEqual(os.stat(destination).st_mode & 0o777, 0o644)
+
+    def test_verified_download_rejects_oversized_update_without_writing_target(self):
+        payload = b"oversized"
+        checksum = __import__("hashlib").sha256(payload).hexdigest().encode() + b"  app"
+        responses = iter((FakeResponse(checksum), FakeResponse(payload)))
+        original_limit = VIEWER.MAX_UPDATE_BYTES
+        VIEWER.MAX_UPDATE_BYTES = 4
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                destination = os.path.join(directory, "app")
+                with self.assertRaises(RuntimeError):
+                    VIEWER.download_verified("asset", "checksum", destination, opener=lambda *_args, **_kwargs: next(responses))
+                self.assertFalse(os.path.exists(destination))
+        finally:
+            VIEWER.MAX_UPDATE_BYTES = original_limit
 
     def test_linux_updater_uses_restricted_polkit_command(self):
         original_which = VIEWER.shutil.which

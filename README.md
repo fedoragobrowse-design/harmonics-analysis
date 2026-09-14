@@ -30,7 +30,9 @@ computer.
   restart, or opens Linux's normal system authorization dialog to install a
   verified `.deb` without requiring a terminal command. The Linux path refuses
   downloads, upgrades, and package removals during installation, and stages
-  its package in `/var/tmp` so APT can retain its `_apt` sandbox.
+  its package in `/var/tmp` so APT can retain its `_apt` sandbox. Downloads
+  are size-limited and written atomically; Windows keeps the prior executable
+  as a rollback file until its replacement has launched.
 - **Input-level meter** — immediately see whether the microphone is hearing
   silence, a comfortable signal, or a level that may clip.
 - **Quiet baseline (noise calibration)** — two seconds of room silence set a
@@ -57,7 +59,7 @@ computer.
 ### Debian / Ubuntu (from the `.deb`)
 
 ```sh
-sudo apt install ./harmonics-analysis_1.5.8_all.deb
+sudo apt install ./harmonics-analysis_1.6.0_all.deb
 ```
 
 This installs a `harmonics-analysis` command and a desktop launcher.
@@ -80,7 +82,7 @@ automatically for every `v*` tag) and run it. FFmpeg is bundled inside.
    `sounddevice`); sound files are decoded to the same format by FFmpeg.
 2. **Frame analysis** — each 4 096-sample frame is windowed, transformed with
    a radix-2 FFT, and converted to dB levels for 0–5 kHz bins.
-3. **Pitch detection** — harmonic summation scores a possible base note
+3. **Pitch detection** — a precomputed Hann window and harmonic summation score a possible base note
    against up to six overtones between 55 and 1,200 Hz, then refines it with
    parabolic interpolation. This avoids treating a loud overtone as the base
    note and covers unusually low and high held vowels.
@@ -92,11 +94,14 @@ Details, constants, and the data flow are in
 
 ## Building
 
-- Debian package: `./build-deb.sh` → `harmonics-analysis_1.5.8_all.deb`
+- Debian package: `./build-deb.sh` → `harmonics-analysis_1.6.0_all.deb`
 - Windows exe: see [`docs/BUILDING.md`](docs/BUILDING.md)
 - CI: pushing a tag `v*` runs `.github/workflows/build-release.yml`, which
   builds both artefacts, SHA-256 checksum sidecars, and the GitHub Release that
   the in-app updater uses. A manual dispatch validates build artefacts only.
+
+For tagged releases, the Windows assets must pass Authenticode signing and
+verification. See [`docs/RELEASING.md`](docs/RELEASING.md).
 
 ## Repository layout
 

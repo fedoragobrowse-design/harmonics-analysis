@@ -20,6 +20,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import tkinter as tk
 import urllib.request
 from dataclasses import dataclass, field
@@ -39,8 +40,11 @@ MAX_PITCH_HZ = 1_200.0
 VOICE_RMS_DB = -55.0
 RANGE_HOLD_FRAMES = 9  # about 0.77 seconds at the current frame size
 RANGE_STABILITY_CENTS = 35.0
-APP_VERSION = "1.5.8"
+APP_VERSION = "1.6.0"
 RELEASES_API = "https://api.github.com/repos/fedoragobrowse-design/harmonics-analysis/releases/latest"
+MAX_BIN = min(FRAME_SIZE // 2, int(MAX_FREQUENCY * FRAME_SIZE / SAMPLE_RATE))
+HANN_WINDOW = tuple(0.5 - 0.5 * math.cos(2.0 * math.pi * index / (FRAME_SIZE - 1)) for index in range(FRAME_SIZE))
+MAX_UPDATE_BYTES = 200 * 1024 * 1024
 
 
 def system_theme() -> str:
@@ -105,7 +109,8 @@ def windows_capture_candidates(sound: object, device_index: int | None) -> list[
     """Try 48 kHz first, then the selected device's shared-mode rate."""
     device = sound.query_devices(device_index, "input")
     native_rate = float(device["default_samplerate"])
-    return list(dict.fromkeys((float(SAMPLE_RATE), native_rate)))
+    rates = (float(SAMPLE_RATE), native_rate)
+    return list(dict.fromkeys(rate for rate in rates if math.isfinite(rate) and rate > 0))
 
 
 @dataclass(frozen=True)
@@ -149,7 +154,7 @@ def select_update(release: dict[str, object], current_version: str, windows: boo
     if not isinstance(assets, list):
         return None
     suffix = "Harmonics-Analysis-Windows.exe" if windows else "_all.deb"
-    selected = next((asset for asset in assets if isinstance(asset, dict) and str(asset.get("name", "")).endswith(suffix)), None)
+    selected = next((asset for asset in assets if isinstance(asset, dict) and str(asset.get("name", "")).endswith(suffix) and (windows or str(asset.get("name", "")).startswith("harmonics-analysis_"))), None)
     if selected is None:
         return None
     name = str(selected.get("name", ""))
@@ -189,7 +194,12 @@ def download_verified(url: str, checksum_url: str, destination: str, opener: obj
     handle, temporary = tempfile.mkstemp(prefix=".harmonics-update-", dir=directory)
     try:
         with os.fdopen(handle, "wb") as output, opener(url, timeout=30) as response:
-            shutil.copyfileobj(response, output)
+            downloaded = 0
+            while chunk := response.read(1_048_576):
+                downloaded += len(chunk)
+                if downloaded > MAX_UPDATE_BYTES:
+                    raise RuntimeError("The update is larger than the 200 MiB safety limit.")
+                output.write(chunk)
         with open(temporary, "rb") as output:
             actual = hashlib.file_digest(output, "sha256").hexdigest()
         if actual != expected:
@@ -364,18 +374,17 @@ def fft(values: list[complex]) -> list[complex]:
 
 
 def analyze(raw: bytes) -> SpectrumFrame:
+    if len(raw) != FRAME_SIZE * 2:
+        raise ValueError(f"Expected {FRAME_SIZE * 2} bytes of 16-bit PCM, got {len(raw)}.")
     samples = struct.unpack(f"<{FRAME_SIZE}h", raw)
     rms = math.sqrt(sum(sample * sample for sample in samples) / FRAME_SIZE)
     rms_db = 20.0 * math.log10(max(rms / 32768.0, 1e-8))
 
-    windowed = [
-        complex(sample * (0.5 - 0.5 * math.cos(2.0 * math.pi * index / (FRAME_SIZE - 1))), 0.0)
-        for index, sample in enumerate(samples)
-    ]
+    # Precomputing the Hann window removes 4,096 cosine calls per live frame.
+    windowed = [complex(sample * HANN_WINDOW[index], 0.0) for index, sample in enumerate(samples)]
     transform = fft(windowed)
-    max_bin = min(FRAME_SIZE // 2, int(MAX_FREQUENCY * FRAME_SIZE / SAMPLE_RATE))
     levels = []
-    for index in range(max_bin + 1):
+    for index in range(MAX_BIN + 1):
         magnitude = abs(transform[index]) * 2.0 / FRAME_SIZE
         levels.append(20.0 * math.log10(max(magnitude / 32768.0, 1e-8)))
 
@@ -537,6 +546,7 @@ class HarmonicViewer(tk.Tk):
         self.input_stream: object | None = None
         self.worker: threading.Thread | None = None
         self.running = False
+        self.last_frame_at = time.monotonic()
         self.noise_floor: tuple[float, ...] | None = None
         self.frozen = False
         self.latest_frame: SpectrumFrame | None = None
@@ -572,6 +582,7 @@ class HarmonicViewer(tk.Tk):
         self._draw_grid()
         self.start_capture()
         self.after(35, self.consume_frames)
+        self.after(1_000, self.monitor_capture_health)
 
     def _build_ui(self) -> None:
         if self.theme_mode == "light":
@@ -976,7 +987,14 @@ class HarmonicViewer(tk.Tk):
                 quoted_current = subprocess.list2cmdline([current])
                 quoted_new = subprocess.list2cmdline([destination])
                 with open(script, "w", encoding="utf-8", newline="\r\n") as output:
-                    output.write(f"@echo off\r\nping 127.0.0.1 -n 3 > nul\r\nmove /Y {quoted_new} {quoted_current}\r\nstart \"\" {quoted_current}\r\ndel \"%~f0\"\r\n")
+                    output.write(
+                        f"@echo off\r\nping 127.0.0.1 -n 3 > nul\r\n"
+                        f"set \"APP={current}\"\r\nset \"NEW={destination}\"\r\nset \"BACKUP={current}.previous\"\r\n"
+                        f"move /Y {quoted_current} \"%BACKUP%\"\r\n"
+                        f"if errorlevel 1 goto :done\r\nmove /Y {quoted_new} {quoted_current}\r\n"
+                        f"if errorlevel 1 (move /Y \"%BACKUP%\" {quoted_current} & goto :done)\r\n"
+                        f"start \"\" {quoted_current}\r\ndel \"%BACKUP%\"\r\n:done\r\ndel \"%~f0\"\r\n"
+                    )
                 self.after(0, self.finish_windows_update, script, update.version)
                 return
             destination = os.path.join(linux_update_staging_directory(), f"harmonics-analysis_{update.version}_all.deb")
@@ -1008,6 +1026,11 @@ class HarmonicViewer(tk.Tk):
     def finish_linux_install(self, version: str, installed: bool) -> None:
         if installed:
             self.recording_status.set(f"Version {version} installed safely. Restart Harmonics Analysis to use it.")
+            if messagebox.askyesno("Update installed", f"Version {version} is installed. Restart now?", parent=self):
+                launcher = shutil.which("harmonics-analysis")
+                if launcher:
+                    subprocess.Popen([launcher], start_new_session=True)
+                    self.quit_app()
         else:
             self.recording_status.set("Update was cancelled or failed; the existing app remains installed.")
 
@@ -1060,6 +1083,7 @@ class HarmonicViewer(tk.Tk):
         self.stop_event = threading.Event()
         self.capture_generation += 1
         self.running = True
+        self.last_frame_at = time.monotonic()
         self.note_display.set("—")
         self.base_note.set("Listening for a steady “aaa”")
         self.tuning.set("")
@@ -1422,7 +1446,8 @@ class HarmonicViewer(tk.Tk):
                     self.input_stream = stream
                     with stream:
                         while not stop_event.wait(0.1):
-                            pass
+                            if not stream.active:
+                                raise RuntimeError("Windows microphone stream stopped unexpectedly.")
                     return
                 except Exception as error:
                     failures.append(f"{rate:.0f} Hz: {error}")
@@ -1490,6 +1515,8 @@ class HarmonicViewer(tk.Tk):
                 self.process = None
 
     def put_frame(self, frame: SpectrumFrame | Exception) -> None:
+        if isinstance(frame, SpectrumFrame):
+            self.last_frame_at = time.monotonic()
         try:
             self.frames.put_nowait(frame)
         except queue.Full:
@@ -1498,6 +1525,23 @@ class HarmonicViewer(tk.Tk):
             except queue.Empty:
                 pass
             self.frames.put_nowait(frame)
+
+    def monitor_capture_health(self) -> None:
+        """Recover from a Windows endpoint that stays open but stops sending audio."""
+        if self.running and not self.stop_event.is_set() and time.monotonic() - self.last_frame_at > 4.0:
+            if self.mic_retries < 2:
+                self.mic_retries += 1
+                self.recording_status.set(f"Microphone stalled — reconnecting ({self.mic_retries}/2)…")
+                self.start_capture()
+            else:
+                self.running = False
+                self.recording_status.set("Microphone stopped sending audio. Choose a microphone or restart capture.")
+        elif os.name == "nt" and self.windows_overflow_count:
+            count = self.windows_overflow_count
+            self.windows_overflow_count = 0
+            self.detail.set(f"Windows capture recovered from {count} buffer warning(s). If this repeats, choose another microphone.")
+        if self.winfo_exists():
+            self.after(1_000, self.monitor_capture_health)
 
     def consume_frames(self) -> None:
         latest: SpectrumFrame | Exception | None = None
