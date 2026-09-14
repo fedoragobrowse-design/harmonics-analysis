@@ -43,7 +43,7 @@ VOICE_RMS_DB = -55.0
 RANGE_HOLD_FRAMES = 9  # about 0.77 seconds at the current frame size
 RANGE_STABILITY_CENTS = 35.0
 SPEECH_PROFILE_FRAMES = 24  # roughly two seconds of voiced speech
-APP_VERSION = "2.0.0"
+APP_VERSION = "2.0.1"
 RELEASES_API = "https://api.github.com/repos/fedoragobrowse-design/harmonics-analysis/releases/latest"
 MAX_BIN = min(FRAME_SIZE // 2, int(MAX_FREQUENCY * FRAME_SIZE / SAMPLE_RATE))
 HANN_WINDOW = tuple(0.5 - 0.5 * math.cos(2.0 * math.pi * index / (FRAME_SIZE - 1)) for index in range(FRAME_SIZE))
@@ -186,6 +186,15 @@ def sha256_from_sidecar(data: bytes) -> str | None:
     return value[0].lower()
 
 
+def sha256_file(path: str) -> str:
+    """Hash a file on every supported Python version, including Python 3.10."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as input_file:
+        while block := input_file.read(1_048_576):
+            digest.update(block)
+    return digest.hexdigest()
+
+
 def download_verified(url: str, checksum_url: str, destination: str, opener: object = urllib.request.urlopen) -> None:
     """Download an update atomically and verify its published SHA-256 first."""
     with opener(checksum_url, timeout=15) as response:
@@ -203,8 +212,7 @@ def download_verified(url: str, checksum_url: str, destination: str, opener: obj
                 if downloaded > MAX_UPDATE_BYTES:
                     raise RuntimeError("The update is larger than the 200 MiB safety limit.")
                 output.write(chunk)
-        with open(temporary, "rb") as output:
-            actual = hashlib.file_digest(output, "sha256").hexdigest()
+        actual = sha256_file(temporary)
         if actual != expected:
             raise RuntimeError("The downloaded update did not match its SHA-256 checksum.")
         os.replace(temporary, destination)

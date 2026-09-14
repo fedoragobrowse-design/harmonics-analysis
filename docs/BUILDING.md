@@ -4,9 +4,9 @@
 
 ```sh
 ./build-deb.sh
-# → harmonics-analysis_2.0.0_all.deb
+# → harmonics-analysis_2.0.1_all.deb
 # Stages the package where APT's sandbox can read it.
-./install-harmonics-analysis.sh ./harmonics-analysis_2.0.0_all.deb
+./install-harmonics-analysis.sh ./harmonics-analysis_2.0.1_all.deb
 ```
 
 The script stages a `build/` tree with:
@@ -51,7 +51,7 @@ creates the GitHub Release with both asset files and SHA-256 sidecars; those
 are the only files accepted by the in-app updater. Release steps:
 
 ```sh
-git tag v2.0.0 && git push origin v2.0.0
+git tag v2.0.1 && git push origin v2.0.1
 ```
 
 then attach the downloaded artefacts to a GitHub release (`gh release create`).

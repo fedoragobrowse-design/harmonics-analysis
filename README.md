@@ -104,7 +104,7 @@ Details, constants, and the data flow are in
 
 ## Building
 
-- Debian package: `./build-deb.sh` → `harmonics-analysis_2.0.0_all.deb`
+- Debian package: `./build-deb.sh` → `harmonics-analysis_2.0.1_all.deb`
 - Windows exe: see [`docs/BUILDING.md`](docs/BUILDING.md)
 - CI: pushing a tag `v*` runs `.github/workflows/build-release.yml`, which
   builds both artefacts, SHA-256 checksum sidecars, and the GitHub Release that
