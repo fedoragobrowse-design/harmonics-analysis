@@ -18,7 +18,7 @@ ffmpeg (file decode) ───────────────────�
 
 | Step | Code | Detail |
 |------|------|--------|
-| Windowing | Hann, `0.5 − 0.5·cos(2πi/(N−1))` | applied before the FFT |
+| Windowing | Hann, `0.5 − 0.5·cos(2πi/(N−1))` | precomputed once, then applied before each FFT |
 | Transform | `fft()` | iterative radix-2, in-place bit-reversal; `FRAME_SIZE` is a power of two |
 | Levels | dBFS per bin | `20·log10(magnitude·2/N / 32768)`, clamped at −80 dB floor |
 | RMS | `rms_db` | frame loudness used for the −55 dB voiced/unvoiced threshold |
@@ -52,8 +52,9 @@ While recording, every frame goes through `TakeAnalysis.add_frame`:
   consecutive equal notes extend a `NoteRun`, a change starts a new one;
 - the level at each of H1–H6 (bin `round(f·h·FRAME_SIZE/SAMPLE_RATE)`) feeds
   `harmonic_totals`/`harmonic_counts`, giving `harmonic_averages()`;
-- only a run of at least three nearby pitch frames contributes to a vocal
-  range; this excludes short speech-like pitch changes. The 5th–95th
+- only a sustained, tightly clustered vowel-like pitch run contributes to a
+  vocal range; short speech-like pitch changes remain visible live but do not
+  skew the summary. The 5th–95th
   percentile of those sustained pitches produces the cautious range label,
   rather than classifying a voice from its average pitch.
 
@@ -80,6 +81,9 @@ to the same raw PCM format and the frames feed a fresh `TakeAnalysis`.
   frame state touches Tk.
 - `stop_capture` terminates the child process; the window close protocol
   routes through `quit_app` so the recorder never outlives the GUI.
+- A capture-health timer detects a stalled source, reports a useful status,
+  and makes a bounded restart attempt. This is especially important for
+  Windows shared-mode devices that can disappear or change format mid-session.
 
 ## UI structure
 
@@ -99,3 +103,10 @@ else `GTK_THEME`).
   `--add-binary`; `bundled_tool()` resolves FFmpeg from `sys._MEIPASS` first,
   so the released exe needs nothing installed.
 - `.github/workflows/build-release.yml` builds both artefacts on `v*` tags.
+- The Windows release job smoke-tests the packaged MCP executable after
+  building it. Tagged releases require a real Authenticode certificate stored
+  only in GitHub Actions secrets; the job signs and verifies both Windows
+  executables before a release can be published.
+- Updates are downloaded to a temporary file, size-limited, checksum-verified,
+  and atomically promoted. Windows retains a rollback copy during replacement;
+  Linux stages the package in `/var/tmp` so APT's sandbox can read it.

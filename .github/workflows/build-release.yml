@@ -22,8 +22,8 @@ jobs:
         run: |
           $ffmpeg = (Get-Command ffmpeg).Source
           pyinstaller --noconfirm --clean --windowed --onefile --name "Harmonics Analysis" --hidden-import sounddevice --collect-binaries sounddevice --add-binary "$ffmpeg;." harmonic-viewer.py
-          pyinstaller --noconfirm --clean --console --onefile --name "Harmonics Analysis MCP" --add-data "harmonic-viewer.py;." harmonics-mcp.py
-          '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | & "dist/Harmonics Analysis MCP.exe" | Select-String '"version": "1.6.0"'
+          pyinstaller --noconfirm --clean --console --onefile --name "Harmonics Analysis MCP" --add-data "harmonic-viewer.py;." --hidden-import cmath --hidden-import dataclasses --hidden-import hashlib --hidden-import json --hidden-import math --hidden-import queue --hidden-import shutil --hidden-import struct --hidden-import subprocess --hidden-import tempfile --hidden-import threading --hidden-import time --hidden-import tkinter --hidden-import urllib.request harmonics-mcp.py
+          '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | & "dist/Harmonics Analysis MCP.exe" | Select-String '"version": "1.6.1"'
       - name: Require a signing certificate for tagged releases
         if: startsWith(github.ref, 'refs/tags/v') && (env.WINDOWS_CERTIFICATE_BASE64 == '' || env.WINDOWS_CERTIFICATE_PASSWORD == '')
         shell: pwsh
@@ -59,13 +59,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: chmod +x build-deb.sh && ./build-deb.sh
-      - run: sha256sum harmonics-analysis_1.6.0_all.deb > harmonics-analysis_1.6.0_all.deb.sha256
+      - run: sha256sum harmonics-analysis_1.6.1_all.deb > harmonics-analysis_1.6.1_all.deb.sha256
       - uses: actions/upload-artifact@v4
         with:
           name: Harmonics-Analysis-Debian
           path: |
-            harmonics-analysis_1.6.0_all.deb
-            harmonics-analysis_1.6.0_all.deb.sha256
+            harmonics-analysis_1.6.1_all.deb
+            harmonics-analysis_1.6.1_all.deb.sha256
   release:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [windows, debian]

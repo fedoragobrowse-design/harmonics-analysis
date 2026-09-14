@@ -7,7 +7,7 @@ Every tagged release is configured to require Authenticode signatures on both
 The workflow signs with SHA-256, uses a trusted timestamp server, and verifies
 the signatures before checksums and release assets are produced.
 
-Before tagging `v1.6.0` or a later version, an organization owner must add two
+Before tagging `v1.6.1` or a later version, an organization owner must add two
 GitHub Actions secrets to the repository:
 
 - `WINDOWS_CERTIFICATE_BASE64` — base64 of the password-protected OV or EV
