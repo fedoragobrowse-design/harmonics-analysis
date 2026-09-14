@@ -23,7 +23,7 @@ jobs:
           $ffmpeg = (Get-Command ffmpeg).Source
           pyinstaller --noconfirm --clean --windowed --onefile --name "Harmonics Analysis" --hidden-import sounddevice --collect-binaries sounddevice --add-binary "$ffmpeg;." harmonic-viewer.py
           pyinstaller --noconfirm --clean --console --onefile --name "Harmonics Analysis MCP" --add-data "harmonic-viewer.py;." --collect-submodules tkinter --hidden-import cmath --hidden-import dataclasses --hidden-import hashlib --hidden-import json --hidden-import math --hidden-import queue --hidden-import shutil --hidden-import struct --hidden-import subprocess --hidden-import tempfile --hidden-import threading --hidden-import time --hidden-import urllib.request harmonics-mcp.py
-          '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | & "dist/Harmonics Analysis MCP.exe" | Select-String '"version": "1.6.3"'
+          '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | & "dist/Harmonics Analysis MCP.exe" | Select-String '"version": "1.6.4"'
       - name: Require a signing certificate for tagged releases
         if: startsWith(github.ref, 'refs/tags/v') && (env.WINDOWS_CERTIFICATE_BASE64 == '' || env.WINDOWS_CERTIFICATE_PASSWORD == '')
         shell: pwsh
@@ -37,7 +37,8 @@ jobs:
           [System.IO.File]::WriteAllBytes($certificatePath, [System.Convert]::FromBase64String($env:WINDOWS_CERTIFICATE_BASE64))
           $signTool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" | Sort-Object FullName | Select-Object -Last 1 -ExpandProperty FullName
           if (-not $signTool) { throw "signtool.exe was not found on the Windows runner." }
-          & $signTool sign /fd SHA256 /f $certificatePath /p $env:WINDOWS_CERTIFICATE_PASSWORD /tr http://timestamp.digicert.com /td SHA256 "dist/Harmonics Analysis.exe" "dist/Harmonics Analysis MCP.exe"
+          # Development certificates are self-signed, so avoid a network timestamp dependency.
+          & $signTool sign /fd SHA256 /f $certificatePath /p $env:WINDOWS_CERTIFICATE_PASSWORD "dist/Harmonics Analysis.exe" "dist/Harmonics Analysis MCP.exe"
           if ($LASTEXITCODE -ne 0) { throw "Windows executable signing failed." }
           $certificate = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($certificatePath, $env:WINDOWS_CERTIFICATE_PASSWORD)
           $trustedRoots = [System.Security.Cryptography.X509Certificates.X509Store]::new("Root", "CurrentUser")
@@ -70,13 +71,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: chmod +x build-deb.sh && ./build-deb.sh
-      - run: sha256sum harmonics-analysis_1.6.3_all.deb > harmonics-analysis_1.6.3_all.deb.sha256
+      - run: sha256sum harmonics-analysis_1.6.4_all.deb > harmonics-analysis_1.6.4_all.deb.sha256
       - uses: actions/upload-artifact@v4
         with:
           name: Harmonics-Analysis-Debian
           path: |
-            harmonics-analysis_1.6.3_all.deb
-            harmonics-analysis_1.6.3_all.deb.sha256
+            harmonics-analysis_1.6.4_all.deb
+            harmonics-analysis_1.6.4_all.deb.sha256
   release:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [windows, debian]

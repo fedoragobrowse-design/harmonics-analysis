@@ -4,13 +4,15 @@
 
 Every tagged release is configured to require Authenticode signatures on both
 `Harmonics-Analysis-Windows.exe` and `Harmonics-Analysis-MCP-Windows.exe`.
-The workflow signs with SHA-256, uses a trusted timestamp server, and verifies
-the signatures before checksums and release assets are produced. Its signing
-step has a five-minute timeout so a timestamp-service outage fails safely. A self-signed
+The workflow signs with SHA-256 and verifies the signatures before checksums
+and release assets are produced. Its signing step has a five-minute timeout so
+a signing-service outage fails safely. Development certificates are self-signed
+and deliberately do not use an external timestamp service; configure one when
+replacing it with an OV or EV certificate. A self-signed
 certificate is accepted for development releases; it is trusted only inside the
 ephemeral GitHub runner while the signature is verified.
 
-Before tagging `v1.6.3` or a later version, an organization owner must add two
+Before tagging `v1.6.4` or a later version, an organization owner must add two
 GitHub Actions secrets to the repository:
 
 - `WINDOWS_CERTIFICATE_BASE64` — base64 of a password-protected code-signing
