@@ -38,8 +38,18 @@ jobs:
           if (-not $signTool) { throw "signtool.exe was not found on the Windows runner." }
           & $signTool sign /fd SHA256 /f $certificatePath /p $env:WINDOWS_CERTIFICATE_PASSWORD /tr http://timestamp.digicert.com /td SHA256 "dist/Harmonics Analysis.exe" "dist/Harmonics Analysis MCP.exe"
           if ($LASTEXITCODE -ne 0) { throw "Windows executable signing failed." }
-          & $signTool verify /pa /v "dist/Harmonics Analysis.exe" "dist/Harmonics Analysis MCP.exe"
-          if ($LASTEXITCODE -ne 0) { throw "Windows signature verification failed." }
+          $certificate = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($certificatePath, $env:WINDOWS_CERTIFICATE_PASSWORD)
+          $trustedRoots = [System.Security.Cryptography.X509Certificates.X509Store]::new("Root", "CurrentUser")
+          $trustedRoots.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
+          try {
+            # A self-signed development certificate is trusted only for this isolated verification step.
+            $trustedRoots.Add($certificate)
+            & $signTool verify /pa /v "dist/Harmonics Analysis.exe" "dist/Harmonics Analysis MCP.exe"
+            if ($LASTEXITCODE -ne 0) { throw "Windows signature verification failed." }
+          } finally {
+            $trustedRoots.Remove($certificate)
+            $trustedRoots.Dispose()
+          }
           Copy-Item "dist/Harmonics Analysis.exe" "Harmonics-Analysis-Windows.exe"
           Copy-Item "dist/Harmonics Analysis MCP.exe" "Harmonics-Analysis-MCP-Windows.exe"
           $hash = (Get-FileHash "Harmonics-Analysis-Windows.exe" -Algorithm SHA256).Hash.ToLower()

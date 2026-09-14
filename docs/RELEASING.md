@@ -5,18 +5,27 @@
 Every tagged release is configured to require Authenticode signatures on both
 `Harmonics-Analysis-Windows.exe` and `Harmonics-Analysis-MCP-Windows.exe`.
 The workflow signs with SHA-256, uses a trusted timestamp server, and verifies
-the signatures before checksums and release assets are produced.
+the signatures before checksums and release assets are produced. A self-signed
+certificate is accepted for development releases; it is trusted only inside the
+ephemeral GitHub runner while the signature is verified.
 
 Before tagging `v1.6.1` or a later version, an organization owner must add two
 GitHub Actions secrets to the repository:
 
-- `WINDOWS_CERTIFICATE_BASE64` — base64 of the password-protected OV or EV
-  Authenticode `.pfx` certificate issued to the release publisher.
+- `WINDOWS_CERTIFICATE_BASE64` — base64 of a password-protected code-signing
+  `.pfx` certificate. A self-signed certificate can exercise the signing
+  pipeline, while an OV or EV Authenticode certificate issued to the release
+  publisher is required for normal end-user trust.
 - `WINDOWS_CERTIFICATE_PASSWORD` — the certificate's password.
 
 Never commit a certificate, private key, password, or a base64 certificate
 value to this repository. Without both secrets, a tagged workflow fails before
 it can publish an unsigned Windows release.
+
+Self-signed certificates prove the release was not modified after it was
+signed, but Windows does not trust their publisher by default and may show a
+security warning. Replace the development certificate with an OV or EV
+certificate before presenting the app as generally trusted.
 
 ## Safety checks before publishing
 
