@@ -5,7 +5,8 @@
 ```sh
 ./build-deb.sh
 # → harmonics-analysis_1.6.4_all.deb
-sudo apt install ./harmonics-analysis_1.6.4_all.deb
+# Stages the package where APT's sandbox can read it.
+./install-harmonics-analysis.sh ./harmonics-analysis_1.6.4_all.deb
 ```
 
 The script stages a `build/` tree with:

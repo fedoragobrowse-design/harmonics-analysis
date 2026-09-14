@@ -40,6 +40,12 @@ certificate before presenting the app as generally trusted.
 5. Download the release assets and compare each SHA-256 sidecar before manual
    installation.
 
+Each release also includes `install-harmonics-analysis.sh`. It copies the
+downloaded `.deb` into `/var/tmp` with world-readable file permissions before
+calling APT, avoiding the `_apt` sandbox warning that can occur in private home
+directories. It uses `apt install --no-remove` and removes its temporary file
+when it exits.
+
 ## Runtime recovery
 
 Windows capture first tries 48 kHz then a selected device's native shared-mode

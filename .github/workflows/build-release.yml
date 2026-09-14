@@ -78,6 +78,7 @@ jobs:
           path: |
             harmonics-analysis_1.6.4_all.deb
             harmonics-analysis_1.6.4_all.deb.sha256
+            install-harmonics-analysis.sh
   release:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [windows, debian]

@@ -56,12 +56,16 @@ computer.
 
 ## Install
 
-### Debian / Ubuntu (from the `.deb`)
+### Debian / Ubuntu (recommended)
 
 ```sh
-sudo apt install ./harmonics-analysis_1.6.4_all.deb
+chmod +x install-harmonics-analysis.sh
+./install-harmonics-analysis.sh
 ```
 
+Download `install-harmonics-analysis.sh` alongside the `.deb` release asset.
+It safely stages the package in `/var/tmp` before asking for your password, so
+APT stays sandboxed even when the download is in a private Downloads folder.
 This installs a `harmonics-analysis` command and a desktop launcher.
 
 ### From source
