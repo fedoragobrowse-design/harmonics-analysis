@@ -37,7 +37,9 @@ SPECTRUM_HEIGHT = 350
 MIN_PITCH_HZ = 55.0
 MAX_PITCH_HZ = 1_200.0
 VOICE_RMS_DB = -55.0
-APP_VERSION = "1.5.7"
+RANGE_HOLD_FRAMES = 9  # about 0.77 seconds at the current frame size
+RANGE_STABILITY_CENTS = 35.0
+APP_VERSION = "1.5.8"
 RELEASES_API = "https://api.github.com/repos/fedoragobrowse-design/harmonics-analysis/releases/latest"
 
 
@@ -298,13 +300,14 @@ class TakeAnalysis:
         else:
             self.note_runs.append(NoteRun(note, 1))
             self.last_note = note
-        if self._stable_run and abs(1200 * math.log2(fundamental / self._stable_run[-1])) <= 70:
+        if self._stable_run and abs(1200 * math.log2(fundamental / self._stable_run[-1])) <= RANGE_STABILITY_CENTS:
             self._stable_run.append(fundamental)
         else:
             self._stable_run = [fundamental]
-        # Speech changes pitch rapidly.  Only sustained vowel-like sound is
-        # used for a range estimate, while live speech can still show a note.
-        if len(self._stable_run) >= 3:
+        # Speech can have a detectable pitch, but it typically moves more
+        # than 35 cents from frame to frame. Only a ~0.8 second, tightly held
+        # vowel-like note enters a range result; live note display is unchanged.
+        if len(self._stable_run) >= RANGE_HOLD_FRAMES:
             self.sustained_frequencies.append(fundamental)
         for harmonic in range(1, 7):
             bin_index = round(fundamental * harmonic * FRAME_SIZE / SAMPLE_RATE)
@@ -484,7 +487,7 @@ def vocal_range_label(take: TakeAnalysis) -> tuple[str, str]:
     """Report an observed register without diagnosing a singer from a short take."""
     values = sorted(take.sustained_frequencies)
     if len(values) < 3:
-        return "No steady pitch", "A short held vowel is enough for a pitch readout; brief speech is ignored."
+        return "No held vowel yet", "Live notes work for speech, but range results require one calm vowel held for about a second."
     low_frequency = values[max(0, round((len(values) - 1) * 0.05))]
     high_frequency = values[min(len(values) - 1, round((len(values) - 1) * 0.95))]
     low = 69 + 12 * math.log2(low_frequency / 440.0)

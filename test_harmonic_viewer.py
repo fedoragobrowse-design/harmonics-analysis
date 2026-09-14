@@ -51,7 +51,7 @@ class FakeResponse:
 class PitchRegressionTests(unittest.TestCase):
     def test_about_page_text_includes_current_version_and_privacy(self):
         text = VIEWER.about_text()
-        self.assertIn("v1.5.7", text)
+        self.assertIn(f"v{VIEWER.APP_VERSION}", text)
         self.assertIn("never uploaded", text)
 
     def test_harmonic_pitch_handles_low_and_high_vowels(self):
@@ -66,6 +66,15 @@ class PitchRegressionTests(unittest.TestCase):
         take.sustained_frequencies.extend((110.0, 110.0, 110.0, 110.0, 110.0))
         label, _detail = VIEWER.vocal_range_label(take)
         self.assertEqual(label, "Low observed register")
+
+    def test_speech_like_pitch_changes_do_not_enter_range_collection(self):
+        take = VIEWER.TakeAnalysis.start(int(VIEWER.MAX_FREQUENCY * VIEWER.FRAME_SIZE / VIEWER.SAMPLE_RATE) + 1)
+        for frequency in (220.0, 245.0) * 8:
+            take.add_frame(VIEWER.analyze(vowel_frame(frequency)), None)
+        self.assertEqual(take.sustained_frequencies, [])
+        for _ in range(VIEWER.RANGE_HOLD_FRAMES):
+            take.add_frame(VIEWER.analyze(vowel_frame(220.0)), None)
+        self.assertGreaterEqual(len(take.sustained_frequencies), 1)
 
     def test_instrument_range_never_uses_a_vocal_label(self):
         take = VIEWER.TakeAnalysis.start(10)
