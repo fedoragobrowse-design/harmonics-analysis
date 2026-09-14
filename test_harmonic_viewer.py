@@ -104,6 +104,20 @@ class PitchRegressionTests(unittest.TestCase):
             VIEWER.download_verified("asset", "checksum", destination, opener=lambda *_args, **_kwargs: next(responses))
             with open(destination, "rb") as output:
                 self.assertEqual(output.read(), payload)
+            self.assertEqual(os.stat(destination).st_mode & 0o777, 0o644)
+
+    def test_linux_updater_uses_restricted_polkit_command(self):
+        original_which = VIEWER.shutil.which
+        VIEWER.shutil.which = lambda name: {"pkexec": "/usr/bin/pkexec", "apt-get": "/usr/bin/apt-get"}.get(name)
+        try:
+            self.assertEqual(VIEWER.linux_update_command("/tmp/harmonics-analysis_1.5.6_all.deb"), ["/usr/bin/pkexec", "/usr/bin/apt-get", "install", "-y", "--no-remove", "--no-download", "/tmp/harmonics-analysis_1.5.6_all.deb"])
+            with self.assertRaises(RuntimeError):
+                VIEWER.linux_update_command("/tmp/other-package.deb")
+        finally:
+            VIEWER.shutil.which = original_which
+
+    def test_linux_update_staging_directory_is_public_temp_space(self):
+        self.assertIn(VIEWER.linux_update_staging_directory(), ("/var/tmp", tempfile.gettempdir()))
 
 
 if __name__ == "__main__":

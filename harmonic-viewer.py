@@ -37,7 +37,7 @@ SPECTRUM_HEIGHT = 350
 MIN_PITCH_HZ = 55.0
 MAX_PITCH_HZ = 1_200.0
 VOICE_RMS_DB = -55.0
-APP_VERSION = "1.5.5"
+APP_VERSION = "1.5.6"
 RELEASES_API = "https://api.github.com/repos/fedoragobrowse-design/harmonics-analysis/releases/latest"
 
 
@@ -178,12 +178,39 @@ def download_verified(url: str, checksum_url: str, destination: str, opener: obj
         if actual != expected:
             raise RuntimeError("The downloaded update did not match its SHA-256 checksum.")
         os.replace(temporary, destination)
+        # APT's unprivileged _apt user must be able to read a local package.
+        # Keeping the file in a public temporary directory avoids an unsafe
+        # root fallback caused by private home-directory permissions.
+        os.chmod(destination, 0o644)
     except Exception:
         try:
             os.unlink(temporary)
         except FileNotFoundError:
             pass
         raise
+
+
+def linux_update_command(package_path: str) -> list[str]:
+    """Build a deliberately constrained, Polkit-authorized package install."""
+    absolute_path = os.path.abspath(package_path)
+    filename = os.path.basename(absolute_path)
+    if not filename.startswith("harmonics-analysis_") or not filename.endswith("_all.deb"):
+        raise RuntimeError("Refusing to install an unexpected package filename.")
+    polkit = shutil.which("pkexec")
+    apt_get = shutil.which("apt-get")
+    if not polkit or not apt_get:
+        raise RuntimeError("Automatic updates need Polkit and apt-get on this Linux system.")
+    # No upgrades, no downloads, and no package removals.  If dependency
+    # resolution would alter anything else, APT aborts and the old app stays.
+    return [polkit, apt_get, "install", "-y", "--no-remove", "--no-download", absolute_path]
+
+
+def linux_update_staging_directory() -> str:
+    """Prefer a directory traversable by APT's sandboxed _apt user."""
+    for directory in ("/var/tmp", tempfile.gettempdir()):
+        if os.path.isdir(directory) and os.access(directory, os.W_OK | os.X_OK):
+            return directory
+    raise RuntimeError("No safe temporary directory is available for the update package.")
 
 @dataclass(frozen=True)
 class SpectrumFrame:
@@ -910,7 +937,7 @@ class HarmonicViewer(tk.Tk):
                     output.write(f"@echo off\r\nping 127.0.0.1 -n 3 > nul\r\nmove /Y {quoted_new} {quoted_current}\r\nstart \"\" {quoted_current}\r\ndel \"%~f0\"\r\n")
                 self.after(0, self.finish_windows_update, script, update.version)
                 return
-            destination = os.path.join(os.path.expanduser("~/Downloads"), f"harmonics-analysis_{update.version}_all.deb")
+            destination = os.path.join(linux_update_staging_directory(), f"harmonics-analysis_{update.version}_all.deb")
             download_verified(update.asset_url, update.checksum_url, destination)
             self.after(0, self.finish_linux_update, destination, update.version)
         except Exception as error:
@@ -922,8 +949,25 @@ class HarmonicViewer(tk.Tk):
         self.after(400, self.quit_app)
 
     def finish_linux_update(self, destination: str, version: str) -> None:
-        self.recording_status.set(f"Version {version} downloaded and verified.")
-        messagebox.showinfo("Update ready", f"The verified package is ready:\n{destination}\n\nInstall it with:\nsudo apt install {destination}", parent=self)
+        try:
+            # Polkit displays the desktop's normal authentication dialog only
+            # if needed; no terminal or copied sudo command is involved.
+            process = subprocess.Popen(linux_update_command(destination), start_new_session=True)
+            self.recording_status.set(f"Version {version} verified. Approve the system dialog to install safely.")
+            threading.Thread(target=self.wait_for_linux_update, args=(process, version), daemon=True, name="linux-update-install").start()
+        except Exception as error:
+            self.recording_status.set("Automatic update could not start; the installed app was not changed.")
+            self.detail.set(f"The verified package remains at {destination}. {error}")
+
+    def wait_for_linux_update(self, process: subprocess.Popen[object], version: str) -> None:
+        installed = process.wait() == 0
+        self.after(0, self.finish_linux_install, version, installed)
+
+    def finish_linux_install(self, version: str, installed: bool) -> None:
+        if installed:
+            self.recording_status.set(f"Version {version} installed safely. Restart Harmonics Analysis to use it.")
+        else:
+            self.recording_status.set("Update was cancelled or failed; the existing app remains installed.")
 
     def update_download_failed(self, error: str) -> None:
         self.recording_status.set("Update was not installed.")

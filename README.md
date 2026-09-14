@@ -27,7 +27,10 @@ computer.
   vocal-range labels.
 - **Verified updates** — the optional updater checks the latest stable GitHub
   Release, verifies its SHA-256 checksum, replaces the Windows `.exe` on
-  restart, or downloads the Linux `.deb` ready for a normal `apt install`.
+  restart, or opens Linux's normal system authorization dialog to install a
+  verified `.deb` without requiring a terminal command. The Linux path refuses
+  downloads, upgrades, and package removals during installation, and stages
+  its package in `/var/tmp` so APT can retain its `_apt` sandbox.
 - **Input-level meter** — immediately see whether the microphone is hearing
   silence, a comfortable signal, or a level that may clip.
 - **Quiet baseline (noise calibration)** — two seconds of room silence set a
@@ -54,7 +57,7 @@ computer.
 ### Debian / Ubuntu (from the `.deb`)
 
 ```sh
-sudo apt install ./harmonics-analysis_1.5.5_all.deb
+sudo apt install ./harmonics-analysis_1.5.6_all.deb
 ```
 
 This installs a `harmonics-analysis` command and a desktop launcher.
@@ -89,7 +92,7 @@ Details, constants, and the data flow are in
 
 ## Building
 
-- Debian package: `./build-deb.sh` → `harmonics-analysis_1.5.5_all.deb`
+- Debian package: `./build-deb.sh` → `harmonics-analysis_1.5.6_all.deb`
 - Windows exe: see [`docs/BUILDING.md`](docs/BUILDING.md)
 - CI: pushing a tag `v*` runs `.github/workflows/build-release.yml`, which
   builds both artefacts, SHA-256 checksum sidecars, and the GitHub Release that
