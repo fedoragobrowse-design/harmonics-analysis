@@ -4,8 +4,8 @@
 
 ```sh
 ./build-deb.sh
-# → harmonics-analysis_1.5.6_all.deb
-sudo apt install ./harmonics-analysis_1.5.6_all.deb
+# → harmonics-analysis_1.5.7_all.deb
+sudo apt install ./harmonics-analysis_1.5.7_all.deb
 ```
 
 The script stages a `build/` tree with:
@@ -50,7 +50,7 @@ creates the GitHub Release with both asset files and SHA-256 sidecars; those
 are the only files accepted by the in-app updater. Release steps:
 
 ```sh
-git tag v1.5.6 && git push origin v1.5.6
+git tag v1.5.7 && git push origin v1.5.7
 ```
 
 then attach the downloaded artefacts to a GitHub release (`gh release create`).

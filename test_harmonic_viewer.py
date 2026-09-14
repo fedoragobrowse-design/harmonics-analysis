@@ -49,6 +49,11 @@ class FakeResponse:
 
 
 class PitchRegressionTests(unittest.TestCase):
+    def test_about_page_text_includes_current_version_and_privacy(self):
+        text = VIEWER.about_text()
+        self.assertIn("v1.5.7", text)
+        self.assertIn("never uploaded", text)
+
     def test_harmonic_pitch_handles_low_and_high_vowels(self):
         for expected in (65.4, 82.4, 110.0, 220.0, 440.0, 880.0, 1_100.0):
             frame = VIEWER.analyze(vowel_frame(expected))

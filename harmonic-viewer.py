@@ -37,7 +37,7 @@ SPECTRUM_HEIGHT = 350
 MIN_PITCH_HZ = 55.0
 MAX_PITCH_HZ = 1_200.0
 VOICE_RMS_DB = -55.0
-APP_VERSION = "1.5.6"
+APP_VERSION = "1.5.7"
 RELEASES_API = "https://api.github.com/repos/fedoragobrowse-design/harmonics-analysis/releases/latest"
 
 
@@ -66,6 +66,21 @@ def bundled_tool(name: str) -> str:
         if os.path.isfile(candidate):
             return candidate
     return name
+
+
+def about_text() -> str:
+    """Keep the About page factual and available without a network request."""
+    return (
+        f"Harmonics Analysis v{APP_VERSION}\n\n"
+        "A local visual tuner for voice and instruments. Pitch, harmonics, "
+        "and recording summaries are analysed on this device; microphone "
+        "audio is never uploaded or retained.\n\n"
+        "Voice mode reports observed registers cautiously. Instrument mode "
+        "never applies a vocal classification.\n\n"
+        "Updates come from GitHub Releases, require a SHA-256 match, and use "
+        "safe platform installers. The optional MCP server accepts only audio "
+        "frames supplied by its client and does not open microphones or watch files."
+    )
 
 
 def resample_pcm_16le(raw: bytes, source_rate: float) -> bytes:
@@ -829,6 +844,18 @@ class HarmonicViewer(tk.Tk):
         ).pack(side="left", padx=(8, 0))
         tk.Button(
             controls,
+            text="About",
+            command=self.show_about,
+            bg="#2b3943",
+            fg="#ffffff",
+            activebackground="#425563",
+            activeforeground="#ffffff",
+            relief="flat",
+            padx=15,
+            pady=8,
+        ).pack(side="right", padx=(0, 8))
+        tk.Button(
+            controls,
             text="Quit",
             command=self.quit_app,
             bg="#2b3943",
@@ -862,6 +889,18 @@ class HarmonicViewer(tk.Tk):
             self.recording_status.set("Instrument mode: recordings show note range, never a vocal classification.")
         else:
             self.recording_status.set("Voice mode: short samples show a neutral observed register.")
+
+    def show_about(self) -> None:
+        popup = tk.Toplevel(self)
+        popup.title("About Harmonics Analysis")
+        popup.configure(bg=self.popup_background())
+        popup.resizable(False, False)
+        popup.transient(self)
+        body = tk.Frame(popup, bg=self.popup_background(), padx=22, pady=20)
+        body.pack(fill="both", expand=True)
+        tk.Label(body, text="About Harmonics Analysis", fg=self.popup_ink(), bg=self.popup_background(), font=("Sans", 18, "bold")).pack(anchor="w")
+        tk.Label(body, text=about_text(), fg=self.popup_ink(), bg=self.popup_background(), font=("Sans", 10), wraplength=500, justify="left").pack(anchor="w", pady=(10, 16))
+        tk.Button(body, text="Close", command=popup.destroy, bg=self.popup_button(), fg=self.popup_ink(), activebackground=self.popup_active(), activeforeground=self.popup_ink(), relief="flat", padx=14, pady=7).pack(anchor="e")
 
     def choose_microphone(self) -> None:
         """Offer Windows capture devices, so a disconnected default is recoverable."""

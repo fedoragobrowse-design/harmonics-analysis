@@ -1,6 +1,6 @@
 # Harmonics Analysis MCP server
 
-Version 1.5.6 includes a dependency-free, local stdio MCP server. It exposes:
+Version 1.5.7 includes a dependency-free, local stdio MCP server. It exposes:
 
 - `harmonics_status` — application version and supported audio format
 - `analyze_pcm_frame` — pitch, note, confidence, and level for one base64

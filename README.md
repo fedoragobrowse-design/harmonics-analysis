@@ -57,7 +57,7 @@ computer.
 ### Debian / Ubuntu (from the `.deb`)
 
 ```sh
-sudo apt install ./harmonics-analysis_1.5.6_all.deb
+sudo apt install ./harmonics-analysis_1.5.7_all.deb
 ```
 
 This installs a `harmonics-analysis` command and a desktop launcher.
@@ -92,7 +92,7 @@ Details, constants, and the data flow are in
 
 ## Building
 
-- Debian package: `./build-deb.sh` → `harmonics-analysis_1.5.6_all.deb`
+- Debian package: `./build-deb.sh` → `harmonics-analysis_1.5.7_all.deb`
 - Windows exe: see [`docs/BUILDING.md`](docs/BUILDING.md)
 - CI: pushing a tag `v*` runs `.github/workflows/build-release.yml`, which
   builds both artefacts, SHA-256 checksum sidecars, and the GitHub Release that
