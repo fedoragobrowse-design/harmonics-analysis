@@ -7,7 +7,8 @@ required.
 
 Everything runs on your machine. No account, no network connection, no
 telemetry: microphone audio is analysed in memory and never leaves the
-computer.
+computer. A recorded take can be played back locally; its temporary WAV file
+is removed immediately after playback.
 
 ## Features
 
@@ -22,11 +23,16 @@ computer.
   device's native shared-mode rate and normalizes it for the analyser.
 - **Pitch confidence** — harmonic evidence ranks each live note as clear or
   tentative, rather than pretending a noisy/speech frame is a certain pitch.
-- **Speech and singing are separate** — a 3–5 second conversational sample
-  produces a spoken-pitch profile, while held vowels build singing-range
-  evidence. Neither result assigns gender or a fixed voice type from one note.
+- **Clear natural-speech profile** — a 2–4 second conversational sample shows
+  the pitch you used while speaking normally. It is a snapshot for noticing
+  your own speech changes, never a singing-range, gender, or identity result.
+- **Cautious singing range fit** — after enough comfortable, held low and high
+  vowels, Voice mode reports the closest Bass, Tenor, Alto, or Soprano
+  reference span alongside the notes it observed. It is a practice comparison,
+  not a diagnosis; Instrument mode never shows a vocal result.
 - **MIDI and MuseScore song check** — open `.mid`, `.midi`, `.mscz`, or `.mscx`
-  files to see their written span and compare it with a recorded voice take.
+  files to see their written span, practical anchor notes to sing, and a
+  comparison with a recorded voice take.
   Multi-part scores can include accompaniment, so the result remains a careful
   range check rather than a promise of comfort or technique.
 - **Practice metronome and real microphone mute** — set 30–300 BPM for a local
@@ -43,10 +49,10 @@ computer.
   silence, a comfortable signal, or a level that may clip.
 - **Quiet baseline (noise calibration)** — two seconds of room silence set a
   per-bin noise floor; levels below it are gated out of the analysis.
-- **Record a take** — while recording, every voiced frame is accumulated into
-  a take; when you finish, a summary shows the notes you sang in sequence,
-  observed singing range, speech profile, pitch steadiness, and average energy
-  at H1–H6.
+- **Record, replay, and follow notes** — finish a take, then play it locally
+  inside the summary while the detected note timeline follows along. The audio
+  is retained only in memory for the take and its temporary playback file is
+  deleted when playback ends.
 - **Identify a sound file** — analyse any file FFmpeg can decode (WAV, MP3,
   FLAC, OGG, …) through the same pipeline and get the same take summary.
 - **Freeze graph** — pause the drawing while capture continues.
@@ -104,7 +110,7 @@ Details, constants, and the data flow are in
 
 ## Building
 
-- Debian package: `./build-deb.sh` → `harmonics-analysis_2.0.1_all.deb`
+- Debian package: `./build-deb.sh` → `harmonics-analysis_2.1.0_all.deb`
 - Windows exe: see [`docs/BUILDING.md`](docs/BUILDING.md)
 - CI: pushing a tag `v*` runs `.github/workflows/build-release.yml`, which
   builds both artefacts, SHA-256 checksum sidecars, and the GitHub Release that
@@ -137,5 +143,5 @@ desktop app. It never starts recording or uploads audio. See
 ## Privacy
 
 The application performs all analysis locally. It opens no network
-connections; microphone and file audio are processed in memory only, and
-takes are shown in a summary window without being written to disk.
+connections; microphone and file audio are processed in memory only. A take is
+written to a temporary WAV file solely while it is playing, then removed.

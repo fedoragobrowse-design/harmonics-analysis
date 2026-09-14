@@ -6,12 +6,12 @@ on:
       source_ref:
         description: Git ref to package
         required: true
-        default: v2.0.1
+        default: v2.1.0
         type: string
       release_tag:
         description: Existing GitHub Release tag to receive the files
         required: true
-        default: v2.0.1
+        default: v2.1.0
         type: string
 
 permissions:
@@ -40,7 +40,7 @@ jobs:
           Set-Content -Path "Harmonics-Analysis-Windows.exe.sha256" -Value "$hash  Harmonics-Analysis-Windows.exe" -NoNewline
       - uses: actions/upload-artifact@v4
         with:
-          name: Harmonics-Analysis-Windows-v2.0.1
+          name: Harmonics-Analysis-Windows-v2.1.0
           path: |
             Harmonics-Analysis-Windows.exe
             Harmonics-Analysis-Windows.exe.sha256

@@ -19,8 +19,8 @@ jobs:
         run: |
           $ffmpeg = (Get-Command ffmpeg).Source
           pyinstaller --noconfirm --clean --windowed --onefile --name "Harmonics Analysis" --hidden-import sounddevice --collect-binaries sounddevice --add-binary "$ffmpeg;." harmonic-viewer.py
-          pyinstaller --noconfirm --clean --console --onefile --name "Harmonics Analysis MCP" --add-data "harmonic-viewer.py;." --collect-submodules tkinter --hidden-import cmath --hidden-import dataclasses --hidden-import hashlib --hidden-import json --hidden-import math --hidden-import queue --hidden-import shutil --hidden-import struct --hidden-import subprocess --hidden-import tempfile --hidden-import threading --hidden-import time --hidden-import urllib.request --hidden-import zipfile --hidden-import xml.etree.ElementTree harmonics-mcp.py
-          '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | & "dist/Harmonics Analysis MCP.exe" | Select-String '"version": "2.0.1"'
+          pyinstaller --noconfirm --clean --console --onefile --name "Harmonics Analysis MCP" --add-data "harmonic-viewer.py;." --collect-submodules tkinter --hidden-import cmath --hidden-import dataclasses --hidden-import hashlib --hidden-import json --hidden-import math --hidden-import queue --hidden-import shutil --hidden-import struct --hidden-import subprocess --hidden-import tempfile --hidden-import threading --hidden-import time --hidden-import urllib.request --hidden-import wave --hidden-import zipfile --hidden-import xml.etree.ElementTree harmonics-mcp.py
+          '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | & "dist/Harmonics Analysis MCP.exe" | Select-String '"version": "2.1.0"'
       - name: Prepare unsigned Windows executables and checksums
         shell: pwsh
         run: |
@@ -43,13 +43,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: chmod +x build-deb.sh && ./build-deb.sh
-      - run: sha256sum harmonics-analysis_2.0.1_all.deb > harmonics-analysis_2.0.1_all.deb.sha256
+      - run: sha256sum harmonics-analysis_2.1.0_all.deb > harmonics-analysis_2.1.0_all.deb.sha256
       - uses: actions/upload-artifact@v4
         with:
           name: Harmonics-Analysis-Debian
           path: |
-            harmonics-analysis_2.0.1_all.deb
-            harmonics-analysis_2.0.1_all.deb.sha256
+            harmonics-analysis_2.1.0_all.deb
+            harmonics-analysis_2.1.0_all.deb.sha256
             install-harmonics-analysis.sh
   release:
     if: startsWith(github.ref, 'refs/tags/v')

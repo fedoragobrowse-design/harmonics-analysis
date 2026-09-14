@@ -62,7 +62,7 @@ def tools() -> list[dict[str, object]]:
         },
         {
             "name": "inspect_score_file",
-            "description": "Read a local MIDI (.mid/.midi) or MuseScore (.mscz/.mscx) file and return its written pitch span. The file is parsed locally and never uploaded.",
+            "description": "Read a local MIDI (.mid/.midi) or MuseScore (.mscz/.mscx) file and return its written pitch span plus practical anchor notes to sing. The file is parsed locally and never uploaded.",
             "inputSchema": {
                 "type": "object",
                 "properties": {"score_path": {"type": "string", "description": "Absolute or relative path to one local MIDI or MuseScore file."}},
@@ -117,6 +117,7 @@ def score_payload(score: object) -> dict[str, object]:
         "track_count": score.track_count,
         "lowest_note": VIEWER.note_for_midi(score.lowest_midi) if score.lowest_midi is not None else None,
         "highest_note": VIEWER.note_for_midi(score.highest_midi) if score.highest_midi is not None else None,
+        "practice_notes": list(VIEWER.score_practice_notes(score)),
         "caution": "The result uses written pitched notes. Multi-part scores or accompaniment can widen the span.",
     }
 

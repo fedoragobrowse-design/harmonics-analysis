@@ -23,6 +23,7 @@ import threading
 import time
 import tkinter as tk
 import urllib.request
+import wave
 import zipfile
 from dataclasses import dataclass, field
 from tkinter import filedialog, messagebox
@@ -43,11 +44,12 @@ VOICE_RMS_DB = -55.0
 RANGE_HOLD_FRAMES = 9  # about 0.77 seconds at the current frame size
 RANGE_STABILITY_CENTS = 35.0
 SPEECH_PROFILE_FRAMES = 24  # roughly two seconds of voiced speech
-APP_VERSION = "2.0.1"
+APP_VERSION = "2.1.0"
 RELEASES_API = "https://api.github.com/repos/fedoragobrowse-design/harmonics-analysis/releases/latest"
 MAX_BIN = min(FRAME_SIZE // 2, int(MAX_FREQUENCY * FRAME_SIZE / SAMPLE_RATE))
 HANN_WINDOW = tuple(0.5 - 0.5 * math.cos(2.0 * math.pi * index / (FRAME_SIZE - 1)) for index in range(FRAME_SIZE))
 MAX_UPDATE_BYTES = 200 * 1024 * 1024
+MAX_TAKE_AUDIO_BYTES = SAMPLE_RATE * 2 * 60 * 10  # retain at most ten local minutes
 
 
 def system_theme() -> str:
@@ -83,7 +85,8 @@ def about_text() -> str:
         f"Harmonics Analysis v{APP_VERSION}\n\n"
         "A local visual tuner for voice and instruments. Pitch, harmonics, "
         "and recording summaries are analysed on this device; microphone "
-        "audio is never uploaded or retained.\n\n"
+        "audio is never uploaded. A take is kept only in memory long enough "
+        "to play it back, then its temporary playback file is removed.\n\n"
         "Voice mode reports observed registers cautiously. Instrument mode "
         "never applies a vocal classification.\n\n"
         "Updates come from GitHub Releases, require a SHA-256 match, and use "
@@ -256,12 +259,14 @@ class SpectrumFrame:
     rms_db: float
     fundamental_hz: float | None
     pitch_confidence: float = 0.0
+    pcm_s16le: bytes | None = None
 
 
 @dataclass
 class NoteRun:
     name: str
     frames: int
+    start_frame: int = 0
 
 
 @dataclass(frozen=True)
@@ -303,6 +308,9 @@ class TakeAnalysis:
     highest_frequency: float | None = None
     sustained_frequencies: list[float] = field(default_factory=list)
     speech_frequencies: list[float] = field(default_factory=list)
+    audio_chunks: list[bytes] = field(default_factory=list)
+    audio_byte_count: int = 0
+    audio_truncated: bool = False
     _stable_run: list[float] = field(default_factory=list)
 
     @classmethod
@@ -322,6 +330,12 @@ class TakeAnalysis:
 
     def add_frame(self, frame: SpectrumFrame, noise_floor: tuple[float, ...] | None) -> None:
         self.frame_count += 1
+        if frame.pcm_s16le is not None:
+            if self.audio_byte_count + len(frame.pcm_s16le) <= MAX_TAKE_AUDIO_BYTES:
+                self.audio_chunks.append(frame.pcm_s16le)
+                self.audio_byte_count += len(frame.pcm_s16le)
+            else:
+                self.audio_truncated = True
         if frame.rms_db < VOICE_RMS_DB or frame.fundamental_hz is None or frame.pitch_confidence < 0.42:
             self.last_note = None
             self._stable_run.clear()
@@ -347,7 +361,7 @@ class TakeAnalysis:
         if note == self.last_note:
             self.note_runs[-1].frames += 1
         else:
-            self.note_runs.append(NoteRun(note, 1))
+            self.note_runs.append(NoteRun(note, 1, self.frame_count - 1))
             self.last_note = note
         if self._stable_run and abs(1200 * math.log2(fundamental / self._stable_run[-1])) <= RANGE_STABILITY_CENTS:
             self._stable_run.append(fundamental)
@@ -377,6 +391,31 @@ class TakeAnalysis:
         if spread_cents < 35:
             return "Mostly steady"
         return "Expressive / changing pitch"
+
+
+def take_audio_duration(take: TakeAnalysis) -> float:
+    return take.audio_byte_count / (SAMPLE_RATE * CHANNELS * 2)
+
+
+def write_take_wav(take: TakeAnalysis) -> str:
+    """Create a temporary, standard WAV solely for immediate local playback."""
+    if not take.audio_chunks:
+        raise ValueError("This take has no audio to play. Record a new take first.")
+    handle, path = tempfile.mkstemp(prefix="harmonics-take-", suffix=".wav")
+    os.close(handle)
+    try:
+        with wave.open(path, "wb") as output:
+            output.setnchannels(CHANNELS)
+            output.setsampwidth(2)
+            output.setframerate(SAMPLE_RATE)
+            output.writeframes(b"".join(take.audio_chunks))
+    except Exception:
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+        raise
+    return path
 
 
 def fft(values: list[complex]) -> list[complex]:
@@ -428,7 +467,7 @@ def analyze(raw: bytes) -> SpectrumFrame:
         levels.append(20.0 * math.log10(max(magnitude / 32768.0, 1e-8)))
 
     fundamental, confidence = estimate_pitch(levels)
-    return SpectrumFrame(tuple(levels), rms_db, fundamental, confidence)
+    return SpectrumFrame(tuple(levels), rms_db, fundamental, confidence, raw)
 
 def _peak_level(levels: tuple[float, ...] | list[float], bin_position: float) -> tuple[float, float]:
     """Return the strongest nearby bin and a sub-bin position."""
@@ -532,7 +571,7 @@ def voice_colour(levels: tuple[float, ...]) -> str:
 
 
 def vocal_range_label(take: TakeAnalysis) -> tuple[str, str]:
-    """Report an observed register without diagnosing a singer from a short take."""
+    """Give a cautious singing-range fit from held vowels, never speech alone."""
     values = sorted(take.sustained_frequencies)
     if not values:
         return "No held vowel yet", "Live notes work for speech. Hold one calm vowel for about a second to record an observed note; add low and high notes to assess singing range."
@@ -543,24 +582,23 @@ def vocal_range_label(take: TakeAnalysis) -> tuple[str, str]:
     high_frequency = values[min(len(values) - 1, round((len(values) - 1) * 0.95))]
     low = 69 + 12 * math.log2(low_frequency / 440.0)
     high = 69 + 12 * math.log2(high_frequency / 440.0)
-    if high - low < 5 or len(values) < 10:
+    if high - low < 8 or len(values) < 10:
         midpoint = (low + high) / 2
         register = "low" if midpoint < 53 else "low-mid" if midpoint < 60 else "mid" if midpoint < 67 else "upper-mid" if midpoint < 74 else "high"
-        return f"{register.capitalize()} observed register", f"Observed: {note_for_frequency(low_frequency)} to {note_for_frequency(high_frequency)}. A longer take can refine this, but no voice type is assigned from a short sample."
+        return f"{register.capitalize()} observed register", f"Observed sustained notes: {note_for_frequency(low_frequency)} to {note_for_frequency(high_frequency)}. Hold comfortable low and high vowels across at least 8 semitones for a cautious bass, tenor, alto, or soprano range fit. Speech is not used for this result."
     profiles = (
-        ("Lower register profile", 40, 64),
-        ("Low-mid register profile", 43, 67),
-        ("Mid register profile", 48, 72),
-        ("Mid-high register profile", 53, 77),
-        ("High register profile", 60, 84),
+        ("Bass", 40, 64),
+        ("Tenor", 48, 72),
+        ("Alto", 53, 77),
+        ("Soprano", 60, 84),
     )
     # Choose the common range with the largest overlap; centres break a tie.
     def score(profile: tuple[str, int, int]) -> tuple[float, float]:
         _name, bottom, top = profile
         overlap = max(0.0, min(high, top) - max(low, bottom))
         return overlap, -abs((low + high) / 2 - (bottom + top) / 2)
-    name, _bottom, _top = max(profiles, key=score)
-    return name, f"Sustained range: {note_for_frequency(low_frequency)} to {note_for_frequency(high_frequency)}. This describes the sample, not a gender or a fixed voice diagnosis."
+    name, bottom, top = max(profiles, key=score)
+    return f"Closest range fit: {name}", f"Your sustained sample: {note_for_frequency(low_frequency)} to {note_for_frequency(high_frequency)}. It most closely overlaps the {name} reference span ({note_for_midi(bottom)} to {note_for_midi(top)}). This is a practice-oriented range comparison, not a gender, identity, training, comfort, or fixed voice diagnosis."
 
 
 def instrument_range_label(take: TakeAnalysis) -> tuple[str, str]:
@@ -589,16 +627,29 @@ def percentile(values: list[float], fraction: float) -> float:
 
 
 def speech_profile_label(take: TakeAnalysis) -> tuple[str, str]:
-    """Describe spoken pitch without pretending it identifies a voice type."""
+    """Describe ordinary spoken pitch without treating it as singing evidence."""
     values = take.speech_frequencies
     if len(values) < SPEECH_PROFILE_FRAMES:
         seconds = len(values) * FRAME_SIZE / SAMPLE_RATE
-        return "Speech sample too short", f"{seconds:.1f} seconds of voiced speech captured. Speak naturally for about 2–4 seconds for a spoken-pitch profile."
+        return "Natural speech sample in progress", f"{seconds:.1f} seconds of voiced speech captured. Speak normally for about 2–4 seconds. This profile describes your everyday speaking pitch in this take; it does not measure singing range or decide a voice category."
     low, typical, high = percentile(values, 0.10), percentile(values, 0.50), percentile(values, 0.90)
     return (
-        "Spoken-pitch profile",
-        f"Typical speaking pitch: {note_for_frequency(typical)} ({typical:.0f} Hz); observed speech span: {note_for_frequency(low)} to {note_for_frequency(high)}. This is not a voice type or gender label.",
+        "Natural speech profile",
+        f"This is the pitch you used while speaking normally in this take. Typical speaking pitch: {note_for_frequency(typical)} ({typical:.0f} Hz); observed speech span: {note_for_frequency(low)} to {note_for_frequency(high)}. Use it to notice changes in your own speech, not to measure singing range or determine voice type, gender, or identity.",
     )
+
+
+def score_practice_midis(score: ScoreAnalysis, count: int = 5) -> tuple[int, ...]:
+    """Select a compact set of written score anchors for vocal practice."""
+    unique = sorted({note.midi for note in score.notes})
+    if len(unique) <= count:
+        return tuple(unique)
+    positions = [round(index * (len(unique) - 1) / (count - 1)) for index in range(count)]
+    return tuple(dict.fromkeys(unique[position] for position in positions))
+
+
+def score_practice_notes(score: ScoreAnalysis) -> tuple[str, ...]:
+    return tuple(note_for_midi(midi) for midi in score_practice_midis(score))
 
 
 def _read_vlq(data: bytes, position: int) -> tuple[int, int]:
@@ -887,14 +938,14 @@ class HarmonicViewer(tk.Tk):
         self.theme_button.pack(side="right")
         tk.Label(
             header,
-            text="Harmonics analysis",
+            text="Sing, record, and see your notes",
             fg=header_text,
             bg=studio,
             font=("Sans", 22, "bold"),
         ).pack(anchor="w")
         tk.Label(
             header,
-            text="A live sketch of the note, colour, and harmonic shape in your voice.",
+            text="Start with the big note. Record a short take when you want to listen back.",
             fg=header_muted,
             bg=studio,
             font=("Sans", 10),
@@ -913,20 +964,20 @@ class HarmonicViewer(tk.Tk):
             highlightbackground=line,
         )
         note_panel.pack(side="left", fill="y")
-        tk.Label(note_panel, text="You are singing", fg=muted_ink, bg=paper, font=("Sans", 10, "bold")).pack(anchor="w")
-        tk.Label(note_panel, textvariable=self.note_display, fg=amber, bg=paper, font=("Sans", 46, "bold")).pack(anchor="w", pady=(1, 0))
+        tk.Label(note_panel, text="Your note right now", fg=muted_ink, bg=paper, font=("Sans", 10, "bold")).pack(anchor="w")
+        tk.Label(note_panel, textvariable=self.note_display, fg=amber, bg=paper, font=("Sans", 64, "bold")).pack(anchor="w", pady=(1, 0))
         tk.Label(note_panel, textvariable=self.base_note, fg=ink, bg=paper, font=("Sans", 10), wraplength=270, justify="left").pack(anchor="w")
         tk.Label(note_panel, textvariable=self.tuning, fg="#257981", bg=paper, font=("Sans", 9, "bold")).pack(anchor="w", pady=(3, 0))
         tk.Label(note_panel, textvariable=self.note_trail, fg=muted_ink, bg=paper, font=("Sans", 8), wraplength=270, justify="left").pack(anchor="w", pady=(4, 0))
         tk.Frame(note_panel, height=2, bg=line).pack(fill="x", pady=15)
-        tk.Label(note_panel, text="Harmonic family", fg=muted_ink, bg=paper, font=("Sans", 10, "bold")).pack(anchor="w")
-        harmonic_text = tk.Frame(note_panel, height=44, bg=paper)
+        tk.Label(note_panel, text="Extra sound detail", fg=muted_ink, bg=paper, font=("Sans", 10, "bold")).pack(anchor="w")
+        harmonic_text = tk.Frame(note_panel, height=54, bg=paper)
         harmonic_text.pack(fill="x", pady=(4, 0))
         harmonic_text.pack_propagate(False)
-        tk.Label(harmonic_text, textvariable=self.recipe, fg=ink, bg=paper, font=("Sans", 10), wraplength=270, justify="left").pack(anchor="w")
+        tk.Label(harmonic_text, textvariable=self.recipe, fg=ink, bg=paper, font=("Sans", 14, "bold"), wraplength=270, justify="left").pack(anchor="w")
         tk.Label(
             note_panel,
-            text="One held note naturally produces this related stack. It is not automatically a chord.",
+            text="These are the extra tones inside one held note. You can ignore them while practising.",
             fg=muted_ink,
             bg=paper,
             font=("Sans", 9),
@@ -934,10 +985,10 @@ class HarmonicViewer(tk.Tk):
             justify="left",
         ).pack(anchor="w", pady=(8, 0))
         tk.Frame(note_panel, height=2, bg=line).pack(fill="x", pady=15)
-        tk.Label(note_panel, text="Voice colour", fg=muted_ink, bg=paper, font=("Sans", 10, "bold")).pack(anchor="w")
+        tk.Label(note_panel, text="Sound colour", fg=muted_ink, bg=paper, font=("Sans", 10, "bold")).pack(anchor="w")
         tk.Label(
             note_panel,
-            text="Where your sound carries its energy",
+            text="A simple picture of where your sound is strongest",
             fg=muted_ink,
             bg=paper,
             font=("Sans", 9),
@@ -958,7 +1009,7 @@ class HarmonicViewer(tk.Tk):
         tk.Label(note_panel, textvariable=self.voice_quality, fg=ink, bg=paper, font=("Sans", 9), wraplength=270, justify="left").pack(anchor="w", pady=(5, 0))
         tk.Label(note_panel, textvariable=self.range_coach, fg="#37644a", bg=paper, font=("Sans", 8, "bold"), wraplength=270, justify="left").pack(anchor="w", pady=(5, 0))
         tk.Frame(note_panel, height=2, bg=line).pack(fill="x", pady=15)
-        tk.Label(note_panel, text="Quiet-room filter", fg=muted_ink, bg=paper, font=("Sans", 10, "bold")).pack(anchor="w")
+        tk.Label(note_panel, text="Reduce room noise", fg=muted_ink, bg=paper, font=("Sans", 10, "bold")).pack(anchor="w")
         tk.Label(note_panel, textvariable=self.noise_filter, fg="#37644a", bg=paper, font=("Sans", 9), wraplength=270, justify="left").pack(anchor="w", pady=(4, 8))
         tk.Button(
             note_panel,
@@ -987,7 +1038,7 @@ class HarmonicViewer(tk.Tk):
 
         graph_panel = tk.Frame(content, bg=studio)
         graph_panel.pack(side="left", fill="both", expand=True, padx=(18, 0))
-        tk.Label(graph_panel, text="Live spectrum", fg="#d9b36b", bg=studio, font=("Sans", 14, "bold")).pack(anchor="w")
+        tk.Label(graph_panel, text="Your sound picture", fg="#d9b36b", bg=studio, font=("Sans", 14, "bold")).pack(anchor="w")
         tk.Label(graph_panel, textvariable=self.status, fg="#76dfe0", bg=studio, font=("Sans", 10, "bold"), wraplength=CANVAS_WIDTH, justify="left").pack(anchor="w", pady=(3, 2))
         tk.Label(graph_panel, textvariable=self.recording_status, fg="#f1a3a3", bg=studio, font=("Sans", 9, "bold"), wraplength=CANVAS_WIDTH, justify="left").pack(anchor="w", pady=(0, 7))
         self.level_canvas = tk.Canvas(graph_panel, width=CANVAS_WIDTH, height=18, bg=self.scope_background, highlightthickness=0)
@@ -1004,7 +1055,7 @@ class HarmonicViewer(tk.Tk):
         self.canvas.pack()
         tk.Label(
             graph_panel,
-            text="Cyan is the sound arriving at the microphone. Amber guides are the harmonic positions for the note at left.",
+            text="The big note at left is what matters. This picture is here when you want more detail.",
             fg="#afc1ca",
             bg=studio,
             font=("Sans", 9),
@@ -1016,7 +1067,7 @@ class HarmonicViewer(tk.Tk):
         controls.pack(fill="x", pady=(12, 0))
         self.record_button = tk.Button(
             controls,
-            text="Record a take",
+            text="Record",
             command=self.toggle_recording,
             bg="#b34848",
             fg="#ffffff",
@@ -1029,7 +1080,7 @@ class HarmonicViewer(tk.Tk):
         self.record_button.pack(side="left")
         self.file_button = tk.Button(
             controls,
-            text="Identify a sound file",
+            text="Open audio",
             command=self.choose_sound_file,
             bg="#315f78",
             fg="#ffffff",
@@ -1042,7 +1093,7 @@ class HarmonicViewer(tk.Tk):
         self.file_button.pack(side="left", padx=(8, 0))
         self.freeze_button = tk.Button(
             controls,
-            text="Freeze graph",
+            text="Pause picture",
             command=self.toggle_freeze,
             bg="#2b3943",
             fg="#ffffff",
@@ -1183,7 +1234,7 @@ class HarmonicViewer(tk.Tk):
         if self.microphone_muted:
             self.mute_button.configure(text="Enable microphone")
         if self.frozen:
-            self.freeze_button.configure(text="Resume live graph")
+            self.freeze_button.configure(text="Resume picture")
 
     def toggle_theme(self) -> None:
         self.theme_mode = "light" if self.theme_mode == "dark" else "dark"
@@ -1392,7 +1443,7 @@ class HarmonicViewer(tk.Tk):
         self.tuning.set("")
         self.recipe.set("Waiting for a harmonic stack")
         self.frozen = False
-        self.freeze_button.configure(text="Freeze graph")
+        self.freeze_button.configure(text="Pause picture")
         self.status.set("Listening — speak comfortably, not loudly.")
         self.detail.set("A steady sound makes the harmonic pattern easiest to see.")
         self.worker = threading.Thread(target=self.capture_loop, args=(self.stop_event, self.capture_generation), daemon=True, name="harmonic-capture")
@@ -1476,11 +1527,11 @@ class HarmonicViewer(tk.Tk):
     def toggle_freeze(self) -> None:
         self.frozen = not self.frozen
         if self.frozen:
-            self.freeze_button.configure(text="Resume live graph")
+            self.freeze_button.configure(text="Resume picture")
             if not self.recording:
                 self.recording_status.set("Graph frozen — microphone capture continues.")
         else:
-            self.freeze_button.configure(text="Freeze graph")
+            self.freeze_button.configure(text="Pause picture")
             if not self.recording:
                 self.recording_status.set("")
 
@@ -1561,7 +1612,7 @@ class HarmonicViewer(tk.Tk):
         take = self.active_take
         self.recording = False
         self.active_take = None
-        self.record_button.configure(text="Record a take", bg="#7b3038", activebackground="#a3434d")
+        self.record_button.configure(text="Record", bg="#7b3038", activebackground="#a3434d")
         self.recording_status.set("")
         if take is not None:
             if self.analysis_mode == "Voice":
@@ -1570,7 +1621,7 @@ class HarmonicViewer(tk.Tk):
                     self.detail.set("Voice sample saved for the open score. Open its score summary to compare your observed notes.")
             self.show_take_summary("Your recorded take", take)
 
-    def show_take_summary(self, title: str, take: TakeAnalysis) -> None:
+    def show_take_summary(self, title: str, take: TakeAnalysis, show_details: bool = False) -> None:
         background = self.popup_background()
         ink = self.popup_ink()
         muted = self.popup_muted()
@@ -1583,7 +1634,7 @@ class HarmonicViewer(tk.Tk):
         body = tk.Frame(summary, bg=background, padx=20, pady=18)
         body.pack(fill="both", expand=True)
         duration = take.frame_count * FRAME_SIZE / SAMPLE_RATE
-        tk.Label(body, text=title, fg=ink, bg=background, font=("Sans", 19, "bold")).pack(anchor="w")
+        tk.Label(body, text="Your take", fg=ink, bg=background, font=("Sans", 22, "bold")).pack(anchor="w")
         tk.Label(
             body,
             text=f"{duration:.1f} seconds analysed locally",
@@ -1597,13 +1648,13 @@ class HarmonicViewer(tk.Tk):
         range_name, range_description = (instrument_range_label(take) if self.analysis_mode == "Instrument" else vocal_range_label(take))
         range_card = tk.Frame(details, bg=self.popup_card(), padx=14, pady=12, highlightthickness=1, highlightbackground=self.popup_border())
         range_card.pack(side="right", fill="y", padx=(14, 0))
-        range_heading = "Observed instrument range" if self.analysis_mode == "Instrument" else "Observed singing range"
+        range_heading = "What we heard"
         tk.Label(range_card, text=range_heading, fg=muted, bg=self.popup_card(), font=("Sans", 9, "bold")).pack(anchor="w")
         tk.Label(range_card, text=range_name, fg=self.scope_harmonics, bg=self.popup_card(), font=("Sans", 18, "bold")).pack(anchor="w", pady=(2, 2))
         tk.Label(range_card, text=range_description, fg=ink, bg=self.popup_card(), font=("Sans", 8), wraplength=190, justify="left").pack(anchor="w")
         notes_area = tk.Frame(details, bg=background)
         notes_area.pack(side="left", fill="both", expand=True)
-        tk.Label(notes_area, text="Notes you sang", fg=muted, bg=background, font=("Sans", 10, "bold")).pack(anchor="w")
+        tk.Label(notes_area, text="Your notes", fg=muted, bg=background, font=("Sans", 10, "bold")).pack(anchor="w")
         note_runs = [run for run in take.note_runs if run.frames >= 2]
         if note_runs:
             note_text = "  →  ".join(
@@ -1617,55 +1668,22 @@ class HarmonicViewer(tk.Tk):
             text=note_text,
             fg=self.scope_harmonics,
             bg=background,
-            font=("Sans", 11, "bold"),
+            font=("Sans", 18, "bold"),
             wraplength=390,
             justify="left",
         ).pack(anchor="w", pady=(4, 0))
 
-        if self.analysis_mode == "Voice":
-            speech_name, speech_description = speech_profile_label(take)
-            speech_card = tk.Frame(body, bg=self.popup_card(), padx=14, pady=11, highlightthickness=1, highlightbackground=self.popup_border())
-            speech_card.pack(fill="x", pady=(0, 15))
-            tk.Label(speech_card, text="Natural speech", fg=muted, bg=self.popup_card(), font=("Sans", 9, "bold")).pack(anchor="w")
-            tk.Label(speech_card, text=speech_name, fg=self.scope_trace, bg=self.popup_card(), font=("Sans", 13, "bold")).pack(anchor="w", pady=(2, 2))
-            tk.Label(speech_card, text=speech_description, fg=ink, bg=self.popup_card(), font=("Sans", 9), wraplength=560, justify="left").pack(anchor="w")
-
-        tk.Label(body, text="Whole-take harmonics", fg=muted, bg=background, font=("Sans", 10, "bold")).pack(anchor="w")
-        tk.Label(
-            body,
-            text="Average energy at H1–H6 across frames with a clear base note",
-            fg=muted,
-            bg=background,
-            font=("Sans", 9),
-        ).pack(anchor="w", pady=(2, 5))
-        harmonic_canvas = tk.Canvas(body, width=610, height=150, bg=self.popup_card(), highlightthickness=1, highlightbackground=self.popup_border())
-        harmonic_canvas.pack(anchor="w")
-        harmonics = take.harmonic_averages()
-        visible = [value for value in harmonics if value is not None]
-        if visible:
-            floor = min(-70.0, min(visible))
-            ceiling = max(visible)
-            for index, value in enumerate(harmonics):
-                left = 34 + index * 96
-                height = 0.0 if value is None else 100 * (value - floor) / max(ceiling - floor, 1.0)
-                harmonic_canvas.create_rectangle(left, 122 - height, left + 54, 122, fill="#f6b73c", outline="")
-                harmonic_canvas.create_text(left + 27, 136, text=f"H{index + 1}", fill=ink, font=("Sans", 9, "bold"))
-                harmonic_canvas.create_text(left + 27, 114 - height, text="—" if value is None else f"{value:.0f}", fill=self.scope_harmonics, font=("Sans", 8))
-        else:
-            harmonic_canvas.create_text(305, 75, text="Hold a steady note to map its harmonics.", fill=muted, font=("Sans", 11))
-
-        average_levels = take.average_levels()
-        tk.Label(
-            body,
-            text=f"Overall voice colour: {voice_colour(average_levels)}  ·  Pitch steadiness: {take.pitch_stability()}",
-            fg=ink,
-            bg=background,
-            font=("Sans", 10),
-        ).pack(anchor="w", pady=(12, 0))
-        tk.Button(
-            body,
-            text="Export summary",
-            command=lambda: self.export_take_summary(title, take),
+        playback_card = tk.Frame(body, bg=self.popup_card(), padx=14, pady=11, highlightthickness=1, highlightbackground=self.popup_border())
+        playback_card.pack(fill="x", pady=(0, 15))
+        tk.Label(playback_card, text="Play your take", fg=muted, bg=self.popup_card(), font=("Sans", 9, "bold")).pack(anchor="w")
+        playback_note = tk.StringVar(value="Notes will light up here during playback.")
+        playback_status = tk.StringVar(value="Audio stays on this device and is discarded when playback ends.")
+        tk.Label(playback_card, textvariable=playback_note, fg=self.scope_harmonics, bg=self.popup_card(), font=("Sans", 17, "bold")).pack(anchor="w", pady=(2, 1))
+        tk.Label(playback_card, textvariable=playback_status, fg=ink, bg=self.popup_card(), font=("Sans", 9), wraplength=560, justify="left").pack(anchor="w")
+        play_button = tk.Button(
+            playback_card,
+            text="Play take",
+            command=lambda: self.play_take_audio(take, playback_note, playback_status, play_button),
             bg=self.popup_button(),
             fg=ink,
             activebackground=self.popup_active(),
@@ -1673,7 +1691,38 @@ class HarmonicViewer(tk.Tk):
             relief="flat",
             padx=14,
             pady=7,
-        ).pack(anchor="w", pady=(12, 0))
+        )
+        play_button.pack(anchor="w", pady=(9, 0))
+
+        if show_details and self.analysis_mode == "Voice":
+            speech_name, speech_description = speech_profile_label(take)
+            speech_card = tk.Frame(body, bg=self.popup_card(), padx=14, pady=11, highlightthickness=1, highlightbackground=self.popup_border())
+            speech_card.pack(fill="x", pady=(0, 15))
+            tk.Label(speech_card, text="Natural speech — what it means", fg=muted, bg=self.popup_card(), font=("Sans", 9, "bold")).pack(anchor="w")
+            tk.Label(speech_card, text=speech_name, fg=self.scope_trace, bg=self.popup_card(), font=("Sans", 13, "bold")).pack(anchor="w", pady=(2, 2))
+            tk.Label(speech_card, text=speech_description, fg=ink, bg=self.popup_card(), font=("Sans", 9), wraplength=560, justify="left").pack(anchor="w")
+
+        if show_details:
+            tk.Label(body, text="Detailed sound view", fg=muted, bg=background, font=("Sans", 10, "bold")).pack(anchor="w")
+            harmonic_canvas = tk.Canvas(body, width=610, height=150, bg=self.popup_card(), highlightthickness=1, highlightbackground=self.popup_border())
+            harmonic_canvas.pack(anchor="w", pady=(4, 0))
+            harmonics = take.harmonic_averages()
+            visible = [value for value in harmonics if value is not None]
+            if visible:
+                floor = min(-70.0, min(visible))
+                ceiling = max(visible)
+                for index, value in enumerate(harmonics):
+                    left = 34 + index * 96
+                    height = 0.0 if value is None else 100 * (value - floor) / max(ceiling - floor, 1.0)
+                    harmonic_canvas.create_rectangle(left, 122 - height, left + 54, 122, fill="#f6b73c", outline="")
+                    harmonic_canvas.create_text(left + 27, 136, text=f"H{index + 1}", fill=ink, font=("Sans", 9, "bold"))
+            else:
+                harmonic_canvas.create_text(305, 75, text="Hold a steady note to map its extra tones.", fill=muted, font=("Sans", 11))
+            average_levels = take.average_levels()
+            tk.Label(body, text=f"Sound colour: {voice_colour(average_levels)}  ·  Pitch steadiness: {take.pitch_stability()}", fg=ink, bg=background, font=("Sans", 10)).pack(anchor="w", pady=(10, 0))
+            tk.Button(body, text="Export details", command=lambda: self.export_take_summary(title, take), bg=self.popup_button(), fg=ink, activebackground=self.popup_active(), activeforeground=ink, relief="flat", padx=14, pady=7).pack(anchor="w", pady=(10, 0))
+        else:
+            tk.Button(body, text="More details", command=lambda: (summary.destroy(), self.show_take_summary(title, take, show_details=True)), bg=self.popup_button(), fg=ink, activebackground=self.popup_active(), activeforeground=ink, relief="flat", padx=14, pady=7).pack(anchor="w", pady=(2, 0))
         tk.Button(
             body,
             text="Close",
@@ -1686,6 +1735,65 @@ class HarmonicViewer(tk.Tk):
             padx=14,
             pady=7,
         ).pack(anchor="e", pady=(12, 0))
+
+    def play_take_audio(self, take: TakeAnalysis, note_label: tk.StringVar, status_label: tk.StringVar, button: tk.Button) -> None:
+        """Play a temporary local WAV and advance through the detected notes."""
+        try:
+            path = write_take_wav(take)
+        except (OSError, ValueError, wave.Error) as error:
+            status_label.set(f"Could not play this take: {error}")
+            return
+        button.configure(state="disabled", text="Playing…")
+        duration = take_audio_duration(take)
+        if take.audio_truncated:
+            status_label.set("Playing the first 10 minutes of this take; the rest was not retained.")
+        else:
+            status_label.set(f"Playing {duration:.1f} seconds locally. Detected notes update as it plays.")
+        started = time.monotonic()
+        self.advance_playback_note(take, started, note_label, status_label, button)
+        threading.Thread(target=self.play_take_worker, args=(path, button, note_label, status_label), daemon=True, name="take-playback").start()
+
+    def advance_playback_note(self, take: TakeAnalysis, started: float, note_label: tk.StringVar, status_label: tk.StringVar, button: tk.Button) -> None:
+        if not button.winfo_exists() or str(button.cget("text")) != "Playing…":
+            return
+        elapsed = time.monotonic() - started
+        frame_index = int(elapsed * SAMPLE_RATE / FRAME_SIZE)
+        current = next((run for run in reversed(take.note_runs) if run.start_frame <= frame_index < run.start_frame + run.frames), None)
+        note_label.set(f"Now: {current.name}" if current is not None else "Now: —")
+        if elapsed < take_audio_duration(take):
+            self.after(70, self.advance_playback_note, take, started, note_label, status_label, button)
+
+    def play_take_worker(self, path: str, button: tk.Button, note_label: tk.StringVar, status_label: tk.StringVar) -> None:
+        error: str | None = None
+        try:
+            if os.name == "nt":
+                import winsound
+
+                winsound.PlaySound(path, winsound.SND_FILENAME)
+            else:
+                player = shutil.which("aplay")
+                if not player:
+                    raise RuntimeError("Playback needs ALSA's aplay tool on Linux.")
+                subprocess.run([player, "-q", path], check=True)
+        except Exception as exception:
+            error = str(exception)
+        finally:
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                pass
+        self.after(0, self.finish_take_playback, button, note_label, status_label, error)
+
+    def finish_take_playback(self, button: tk.Button, note_label: tk.StringVar, status_label: tk.StringVar, error: str | None) -> None:
+        if not button.winfo_exists():
+            return
+        button.configure(state="normal", text="Play again")
+        if error:
+            note_label.set("Playback unavailable")
+            status_label.set(f"Could not play this take: {error}")
+        else:
+            note_label.set("Playback finished")
+            status_label.set("Playback finished. The temporary audio file was removed.")
 
     def export_take_summary(self, title: str, take: TakeAnalysis) -> None:
         """Save a small local text report; recording data itself is not kept."""
@@ -1792,7 +1900,15 @@ class HarmonicViewer(tk.Tk):
         card.pack(fill="x")
         tk.Label(card, text="Written pitch span", fg=muted, bg=self.popup_card(), font=("Sans", 9, "bold")).pack(anchor="w")
         tk.Label(card, text=f"{low}  →  {high}", fg=self.scope_harmonics, bg=self.popup_card(), font=("Sans", 20, "bold")).pack(anchor="w", pady=(2, 3))
-        verdict, explanation = score_singability(score, self.last_voice_take)
+        practice_notes = score_practice_notes(score)
+        tk.Label(card, text="Notes to practise for a clearer check", fg=muted, bg=self.popup_card(), font=("Sans", 9, "bold")).pack(anchor="w", pady=(10, 0))
+        tk.Label(card, text="  ·  ".join(practice_notes) or "—", fg=self.scope_harmonics, bg=self.popup_card(), font=("Sans", 14, "bold"), wraplength=560, justify="left").pack(anchor="w", pady=(2, 2))
+        tk.Label(card, text="In Voice mode, hold a relaxed vowel on these anchors—especially the lowest and highest—then refresh the check.", fg=ink, bg=self.popup_card(), font=("Sans", 9), wraplength=560, justify="left").pack(anchor="w")
+        if self.analysis_mode == "Instrument":
+            verdict = "Instrument mode — no vocal range fit"
+            explanation = "These are written score notes for reference. Instrument takes never show bass, tenor, alto, or soprano results; switch to Voice mode and record sustained vowels for a vocal range comparison."
+        else:
+            verdict, explanation = score_singability(score, self.last_voice_take)
         tk.Label(card, text=verdict, fg=self.scope_trace, bg=self.popup_card(), font=("Sans", 13, "bold")).pack(anchor="w", pady=(8, 2))
         tk.Label(card, text=explanation, fg=ink, bg=self.popup_card(), font=("Sans", 9), wraplength=560, justify="left").pack(anchor="w")
         caution = "This uses every pitched, non-percussion MIDI track." if score.track_count > 1 else "This reads the written notes in the file."
@@ -1872,7 +1988,7 @@ class HarmonicViewer(tk.Tk):
 
     def finish_sound_file_analysis(self, file_path: str, take: TakeAnalysis, error: str | None) -> None:
         self.file_analysis_active = False
-        self.file_button.configure(text="Identify a sound file", state="normal")
+        self.file_button.configure(text="Open audio", state="normal")
         if error:
             self.recording_status.set("Sound-file analysis could not finish.")
             self.detail.set(error)

@@ -1,11 +1,12 @@
 # Harmonics Analysis MCP server
 
-Version 2.0.1 includes a dependency-free, local stdio MCP server. It exposes:
+Version 2.1.0 includes a dependency-free, local stdio MCP server. It exposes:
 
 - `harmonics_status` — application version and supported audio format
 - `analyze_pcm_frame` — pitch, note, confidence, and level for one base64
   encoded 48 kHz, mono, signed-16-bit PCM frame of exactly 4,096 samples
-- `inspect_score_file` — local MIDI/MuseScore note count and written pitch span
+- `inspect_score_file` — local MIDI/MuseScore note count, written pitch span,
+  and practical anchor notes to sing
 - `check_song_range` — compare a score's written span with supplied observed
   MIDI notes; this is never a voice-type or gender decision
 - `open_harmonics_app` — explicitly launch the desktop app, optionally opening

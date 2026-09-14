@@ -7,6 +7,7 @@ import struct
 import sys
 import tempfile
 import unittest
+import wave
 
 
 SPEC = importlib.util.spec_from_file_location("harmonic_viewer", "harmonic-viewer.py")
@@ -62,7 +63,7 @@ class PitchRegressionTests(unittest.TestCase):
             self.assertGreaterEqual(frame.pitch_confidence, 0.42)
 
     def test_range_ignores_short_speech_like_pitch_changes(self):
-        take = VIEWER.TakeAnalysis.start(10)
+        take = VIEWER.TakeAnalysis.start(int(VIEWER.MAX_FREQUENCY * VIEWER.FRAME_SIZE / VIEWER.SAMPLE_RATE) + 1)
         take.sustained_frequencies.extend((110.0, 110.0, 110.0, 110.0, 110.0))
         label, _detail = VIEWER.vocal_range_label(take)
         self.assertEqual(label, "Low observed register")
@@ -74,13 +75,24 @@ class PitchRegressionTests(unittest.TestCase):
         self.assertEqual(label, "Observed held note")
         self.assertIn("C4", detail)
 
-    def test_speech_profile_uses_conversational_pitch_without_assigning_voice_type(self):
+    def test_speech_profile_explains_what_natural_speech_means(self):
         take = VIEWER.TakeAnalysis.start(10)
         take.speech_frequencies.extend([110.0, 116.5, 123.5, 130.8] * VIEWER.SPEECH_PROFILE_FRAMES)
         label, detail = VIEWER.speech_profile_label(take)
-        self.assertEqual(label, "Spoken-pitch profile")
+        self.assertEqual(label, "Natural speech profile")
         self.assertIn("Typical speaking pitch", detail)
-        self.assertIn("not a voice type or gender label", detail)
+        self.assertIn("not to measure singing range", detail)
+
+    def test_voice_range_fit_requires_held_vowels_and_names_the_closest_profile(self):
+        take = VIEWER.TakeAnalysis.start(10)
+        take.sustained_frequencies.extend(VIEWER.frequency_for_midi(note) for note in range(48, 73))
+        label, detail = VIEWER.vocal_range_label(take)
+        self.assertEqual(label, "Closest range fit: Tenor")
+        self.assertIn("C3 to C5", detail)
+
+    def test_score_practice_notes_include_low_middle_and_high_anchors(self):
+        score = VIEWER.ScoreAnalysis("exercise.mid", "MIDI", tuple(VIEWER.ScoreNote(note, 0, 1) for note in range(48, 73)))
+        self.assertEqual(VIEWER.score_practice_notes(score), ("C3", "F♯3", "C4", "F♯4", "C5"))
 
     def test_midi_score_parser_and_range_comparison(self):
         # Header, one track, C4 then E4, then end-of-track.
@@ -128,6 +140,19 @@ class PitchRegressionTests(unittest.TestCase):
     def test_analyze_rejects_incomplete_pcm_frame(self):
         with self.assertRaises(ValueError):
             VIEWER.analyze(b"\x00" * 16)
+
+    def test_take_keeps_local_audio_for_playback_and_writes_valid_wav(self):
+        take = VIEWER.TakeAnalysis.start(int(VIEWER.MAX_FREQUENCY * VIEWER.FRAME_SIZE / VIEWER.SAMPLE_RATE) + 1)
+        take.add_frame(VIEWER.analyze(vowel_frame(220.0)), None)
+        self.assertEqual(take.audio_byte_count, VIEWER.FRAME_SIZE * 2)
+        self.assertAlmostEqual(VIEWER.take_audio_duration(take), VIEWER.FRAME_SIZE / VIEWER.SAMPLE_RATE)
+        path = VIEWER.write_take_wav(take)
+        try:
+            with wave.open(path, "rb") as audio:
+                self.assertEqual((audio.getnchannels(), audio.getframerate(), audio.getsampwidth()), (1, VIEWER.SAMPLE_RATE, 2))
+                self.assertEqual(audio.getnframes(), VIEWER.FRAME_SIZE)
+        finally:
+            os.unlink(path)
 
     def test_precomputed_window_has_one_value_per_sample(self):
         self.assertEqual(len(VIEWER.HANN_WINDOW), VIEWER.FRAME_SIZE)

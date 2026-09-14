@@ -27,6 +27,7 @@ class McpScoreToolTests(unittest.TestCase):
             inspect = MCP.call_tool("inspect_score_file", {"score_path": score_file.name})
             inspect_data = json.loads(inspect["content"][0]["text"])
             self.assertEqual((inspect_data["lowest_note"], inspect_data["highest_note"]), ("C4", "E4"))
+            self.assertEqual(inspect_data["practice_notes"], ["C4", "E4"])
             comparison = MCP.call_tool("check_song_range", {"score_path": score_file.name, "observed_midi_notes": [60, 62, 64, 64]})
             comparison_data = json.loads(comparison["content"][0]["text"])
             self.assertEqual(comparison_data["verdict"], "Speech-only indication")
