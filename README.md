@@ -54,7 +54,7 @@ computer.
 ### Debian / Ubuntu (from the `.deb`)
 
 ```sh
-sudo apt install ./harmonics-analysis_1.5.0_all.deb
+sudo apt install ./harmonics-analysis_1.5.5_all.deb
 ```
 
 This installs a `harmonics-analysis` command and a desktop launcher.
@@ -89,7 +89,7 @@ Details, constants, and the data flow are in
 
 ## Building
 
-- Debian package: `./build-deb.sh` → `harmonics-analysis_1.5.0_all.deb`
+- Debian package: `./build-deb.sh` → `harmonics-analysis_1.5.5_all.deb`
 - Windows exe: see [`docs/BUILDING.md`](docs/BUILDING.md)
 - CI: pushing a tag `v*` runs `.github/workflows/build-release.yml`, which
   builds both artefacts, SHA-256 checksum sidecars, and the GitHub Release that
@@ -105,6 +105,13 @@ windows-requirements.txt  build-time deps for Windows (PyInstaller, sounddevice)
 .github/workflows/      release CI (Windows exe + Debian .deb)
 release-artifacts/      output of the last release build (not tracked)
 ```
+
+## MCP server
+
+`harmonics-mcp.py` is a local stdio MCP server. It exposes version/settings and
+analysis of one client-supplied 48 kHz PCM frame; it never opens the microphone,
+watches files, uploads audio, or retains input. See [`docs/MCP.md`](docs/MCP.md)
+for configuration.
 
 ## Privacy
 

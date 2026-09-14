@@ -37,7 +37,7 @@ SPECTRUM_HEIGHT = 350
 MIN_PITCH_HZ = 55.0
 MAX_PITCH_HZ = 1_200.0
 VOICE_RMS_DB = -55.0
-APP_VERSION = "1.5.0"
+APP_VERSION = "1.5.5"
 RELEASES_API = "https://api.github.com/repos/fedoragobrowse-design/harmonics-analysis/releases/latest"
 
 
@@ -439,22 +439,24 @@ def voice_colour(levels: tuple[float, ...]) -> str:
 
 
 def vocal_range_label(take: TakeAnalysis) -> tuple[str, str]:
-    """Give a cautious, range-based voice label from the notes observed in a take."""
+    """Report an observed register without diagnosing a singer from a short take."""
     values = sorted(take.sustained_frequencies)
-    if len(values) < 6:
-        return "Need held notes", "Speech and brief pitch changes are ignored. Hold a low, middle, and high vowel."
+    if len(values) < 3:
+        return "No steady pitch", "A short held vowel is enough for a pitch readout; brief speech is ignored."
     low_frequency = values[max(0, round((len(values) - 1) * 0.05))]
     high_frequency = values[min(len(values) - 1, round((len(values) - 1) * 0.95))]
     low = 69 + 12 * math.log2(low_frequency / 440.0)
     high = 69 + 12 * math.log2(high_frequency / 440.0)
-    if high - low < 3:
-        return "One held pitch", f"Observed: {note_for_frequency(low_frequency)}. Add sustained low and high vowels to estimate a range."
+    if high - low < 5 or len(values) < 10:
+        midpoint = (low + high) / 2
+        register = "low" if midpoint < 53 else "low-mid" if midpoint < 60 else "mid" if midpoint < 67 else "upper-mid" if midpoint < 74 else "high"
+        return f"{register.capitalize()} observed register", f"Observed: {note_for_frequency(low_frequency)} to {note_for_frequency(high_frequency)}. A longer take can refine this, but no voice type is assigned from a short sample."
     profiles = (
-        ("Bass", 40, 64),
-        ("Baritone", 43, 67),
-        ("Tenor", 48, 72),
-        ("Alto", 53, 77),
-        ("Soprano", 60, 84),
+        ("Lower register profile", 40, 64),
+        ("Low-mid register profile", 43, 67),
+        ("Mid register profile", 48, 72),
+        ("Mid-high register profile", 53, 77),
+        ("High register profile", 60, 84),
     )
     # Choose the common range with the largest overlap; centres break a tie.
     def score(profile: tuple[str, int, int]) -> tuple[float, float]:
@@ -462,7 +464,17 @@ def vocal_range_label(take: TakeAnalysis) -> tuple[str, str]:
         overlap = max(0.0, min(high, top) - max(low, bottom))
         return overlap, -abs((low + high) / 2 - (bottom + top) / 2)
     name, _bottom, _top = max(profiles, key=score)
-    return name, f"Sustained range: {note_for_frequency(low_frequency)} to {note_for_frequency(high_frequency)}. This is a range estimate, not a voice diagnosis."
+    return name, f"Sustained range: {note_for_frequency(low_frequency)} to {note_for_frequency(high_frequency)}. This describes the sample, not a gender or a fixed voice diagnosis."
+
+
+def instrument_range_label(take: TakeAnalysis) -> tuple[str, str]:
+    """Describe notes without applying human voice categories to an instrument."""
+    values = sorted(take.sustained_frequencies)
+    if len(values) < 3:
+        return "Instrument pitch", "Hold a note briefly to show its detected pitch."
+    low = values[max(0, round((len(values) - 1) * 0.05))]
+    high = values[min(len(values) - 1, round((len(values) - 1) * 0.95))]
+    return "Instrument range", f"Observed notes: {note_for_frequency(low)} to {note_for_frequency(high)}. No vocal classification is applied."
 
 
 class HarmonicViewer(tk.Tk):
@@ -496,6 +508,7 @@ class HarmonicViewer(tk.Tk):
         self.pitch_lock = PitchLock()
         self.recent_note_names: list[str] = []
         self.mic_retries = 0
+        self.analysis_mode = "Voice"
 
         self.status = tk.StringVar(value="Getting microphone ready…")
         self.recording_status = tk.StringVar(value="")
@@ -738,6 +751,19 @@ class HarmonicViewer(tk.Tk):
             pady=8,
         )
         self.freeze_button.pack(side="left", padx=(8, 0))
+        self.mode_button = tk.Button(
+            controls,
+            text=f"Mode: {self.analysis_mode}",
+            command=self.toggle_analysis_mode,
+            bg="#386b4b",
+            fg="#ffffff",
+            activebackground="#4b8d63",
+            activeforeground="#ffffff",
+            relief="flat",
+            padx=15,
+            pady=8,
+        )
+        self.mode_button.pack(side="left", padx=(8, 0))
         tk.Button(
             controls,
             text="Choose microphone",
@@ -801,6 +827,14 @@ class HarmonicViewer(tk.Tk):
         self._draw_grid()
         if self.latest_frame is not None:
             self.draw_spectrum(self.latest_frame)
+
+    def toggle_analysis_mode(self) -> None:
+        self.analysis_mode = "Instrument" if self.analysis_mode == "Voice" else "Voice"
+        self.mode_button.configure(text=f"Mode: {self.analysis_mode}")
+        if self.analysis_mode == "Instrument":
+            self.recording_status.set("Instrument mode: recordings show note range, never a vocal classification.")
+        else:
+            self.recording_status.set("Voice mode: short samples show a neutral observed register.")
 
     def choose_microphone(self) -> None:
         """Offer Windows capture devices, so a disconnected default is recoverable."""
@@ -1035,7 +1069,8 @@ class HarmonicViewer(tk.Tk):
         self.active_take = TakeAnalysis.start(level_count)
         self.recording = True
         self.record_button.configure(text="Finish take", bg="#b34048", activebackground="#d1555e")
-        self.recording_status.set("Recording now — sing a phrase, then press Finish take.")
+        activity = "play a phrase" if self.analysis_mode == "Instrument" else "sing a phrase"
+        self.recording_status.set(f"Recording now — {activity}, then press Finish take.")
 
     def finish_recording(self) -> None:
         take = self.active_take
@@ -1070,7 +1105,7 @@ class HarmonicViewer(tk.Tk):
 
         details = tk.Frame(body, bg=background)
         details.pack(fill="x", pady=(0, 15))
-        range_name, range_description = vocal_range_label(take)
+        range_name, range_description = (instrument_range_label(take) if self.analysis_mode == "Instrument" else vocal_range_label(take))
         range_card = tk.Frame(details, bg=self.popup_card(), padx=14, pady=12, highlightthickness=1, highlightbackground=self.popup_border())
         range_card.pack(side="right", fill="y", padx=(14, 0))
         tk.Label(range_card, text="Likely vocal range", fg=muted, bg=self.popup_card(), font=("Sans", 9, "bold")).pack(anchor="w")
@@ -1159,7 +1194,7 @@ class HarmonicViewer(tk.Tk):
         path = filedialog.asksaveasfilename(parent=self, title="Export take summary", defaultextension=".txt", initialfile="harmonics-take-summary.txt", filetypes=(("Text file", "*.txt"),))
         if not path:
             return
-        name, description = vocal_range_label(take)
+        name, description = (instrument_range_label(take) if self.analysis_mode == "Instrument" else vocal_range_label(take))
         note_runs = [f"{run.name} ({run.frames * FRAME_SIZE / SAMPLE_RATE:.1f}s)" for run in take.note_runs if run.frames >= 2]
         report = "\n".join((title, f"Version: {APP_VERSION}", f"Vocal range: {name}", description, f"Pitch steadiness: {take.pitch_stability()}", f"Notes: {', '.join(note_runs) or 'No sustained notes'}", "", "Audio is analysed locally and is not included in this report."))
         try:

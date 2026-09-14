@@ -1,13 +1,13 @@
 #!/bin/sh
 set -eu
 name=harmonics-analysis
-version=1.5.0
+version=1.5.5
 stage="build/${name}_${version}_all"
 rm -rf "$stage"
 mkdir -p "$stage/DEBIAN" "$stage/usr/bin" "$stage/usr/lib/$name" "$stage/usr/share/applications"
 cat > "$stage/DEBIAN/control" <<'EOF'
 Package: harmonics-analysis
-Version: 1.5.0
+Version: 1.5.5
 Section: sound
 Priority: optional
 Architecture: all
@@ -17,9 +17,11 @@ Description: Local voice, harmonic, and sound-file analysis
  A local microphone and sound-file analyser with note, harmonic,
  recording, and voice-colour views.
 EOF
-install -m 755 harmonic-viewer.py "$stage/usr/lib/$name/harmonic-viewer.py"
+install -m 755 harmonic-viewer.py harmonics-mcp.py "$stage/usr/lib/$name/"
 printf '%s\n' '#!/bin/sh' 'exec /usr/bin/python3 /usr/lib/harmonics-analysis/harmonic-viewer.py "$@"' > "$stage/usr/bin/harmonics-analysis"
 chmod 755 "$stage/usr/bin/harmonics-analysis"
+printf '%s\n' '#!/bin/sh' 'exec /usr/bin/python3 /usr/lib/harmonics-analysis/harmonics-mcp.py "$@"' > "$stage/usr/bin/harmonics-analysis-mcp"
+chmod 755 "$stage/usr/bin/harmonics-analysis-mcp"
 cat > "$stage/usr/share/applications/harmonics-analysis.desktop" <<'EOF'
 [Desktop Entry]
 Type=Application

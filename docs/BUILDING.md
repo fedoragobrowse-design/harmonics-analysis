@@ -4,14 +4,15 @@
 
 ```sh
 ./build-deb.sh
-# → harmonics-analysis_1.5.0_all.deb
-sudo apt install ./harmonics-analysis_1.5.0_all.deb
+# → harmonics-analysis_1.5.5_all.deb
+sudo apt install ./harmonics-analysis_1.5.5_all.deb
 ```
 
 The script stages a `build/` tree with:
 
 - `/usr/lib/harmonics-analysis/harmonic-viewer.py` — the application
 - `/usr/bin/harmonics-analysis` — launcher (`python3` + the script)
+- `/usr/bin/harmonics-analysis-mcp` — local stdio MCP server
 - `/usr/share/applications/harmonics-analysis.desktop` — menu entry
 
 Declared dependencies: `python3 (>= 3.10)`, `python3-tk`, `alsa-utils`,
@@ -49,7 +50,7 @@ creates the GitHub Release with both asset files and SHA-256 sidecars; those
 are the only files accepted by the in-app updater. Release steps:
 
 ```sh
-git tag v1.5.0 && git push origin v1.5.0
+git tag v1.5.5 && git push origin v1.5.5
 ```
 
 then attach the downloaded artefacts to a GitHub release (`gh release create`).

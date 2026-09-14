@@ -19,27 +19,33 @@ jobs:
         run: |
           $ffmpeg = (Get-Command ffmpeg).Source
           pyinstaller --noconfirm --clean --windowed --onefile --name "Harmonics Analysis" --hidden-import sounddevice --collect-binaries sounddevice --add-binary "$ffmpeg;." harmonic-viewer.py
+          pyinstaller --noconfirm --clean --console --onefile --name "Harmonics Analysis MCP" harmonics-mcp.py
           Copy-Item "dist/Harmonics Analysis.exe" "Harmonics-Analysis-Windows.exe"
+          Copy-Item "dist/Harmonics Analysis MCP.exe" "Harmonics-Analysis-MCP-Windows.exe"
           $hash = (Get-FileHash "Harmonics-Analysis-Windows.exe" -Algorithm SHA256).Hash.ToLower()
           Set-Content -Path "Harmonics-Analysis-Windows.exe.sha256" -Value "$hash  Harmonics-Analysis-Windows.exe" -NoNewline
+          $mcpHash = (Get-FileHash "Harmonics-Analysis-MCP-Windows.exe" -Algorithm SHA256).Hash.ToLower()
+          Set-Content -Path "Harmonics-Analysis-MCP-Windows.exe.sha256" -Value "$mcpHash  Harmonics-Analysis-MCP-Windows.exe" -NoNewline
       - uses: actions/upload-artifact@v4
         with:
           name: Harmonics-Analysis-Windows
           path: |
             Harmonics-Analysis-Windows.exe
             Harmonics-Analysis-Windows.exe.sha256
+            Harmonics-Analysis-MCP-Windows.exe
+            Harmonics-Analysis-MCP-Windows.exe.sha256
   debian:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - run: chmod +x build-deb.sh && ./build-deb.sh
-      - run: sha256sum harmonics-analysis_1.5.0_all.deb > harmonics-analysis_1.5.0_all.deb.sha256
+      - run: sha256sum harmonics-analysis_1.5.5_all.deb > harmonics-analysis_1.5.5_all.deb.sha256
       - uses: actions/upload-artifact@v4
         with:
           name: Harmonics-Analysis-Debian
           path: |
-            harmonics-analysis_1.5.0_all.deb
-            harmonics-analysis_1.5.0_all.deb.sha256
+            harmonics-analysis_1.5.5_all.deb
+            harmonics-analysis_1.5.5_all.deb.sha256
   release:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [windows, debian]

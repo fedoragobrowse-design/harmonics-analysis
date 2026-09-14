@@ -60,7 +60,14 @@ class PitchRegressionTests(unittest.TestCase):
         take = VIEWER.TakeAnalysis.start(10)
         take.sustained_frequencies.extend((110.0, 110.0, 110.0, 110.0, 110.0))
         label, _detail = VIEWER.vocal_range_label(take)
-        self.assertEqual(label, "Need held notes")
+        self.assertEqual(label, "Low observed register")
+
+    def test_instrument_range_never_uses_a_vocal_label(self):
+        take = VIEWER.TakeAnalysis.start(10)
+        take.sustained_frequencies.extend((82.4, 110.0, 220.0, 329.6, 440.0))
+        label, detail = VIEWER.instrument_range_label(take)
+        self.assertEqual(label, "Instrument range")
+        self.assertIn("No vocal classification", detail)
 
     def test_windows_uses_native_rate_after_48khz(self):
         self.assertEqual(VIEWER.windows_capture_candidates(FakeSoundDevice(), 4), [48_000.0, 44_100.0])
