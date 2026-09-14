@@ -13,6 +13,7 @@
       <a class="brand" href="#top" aria-label="Harmonics Analysis home"><span class="mark">∿</span> Harmonics Analysis</a>
       <nav aria-label="Main navigation">
         <a href="#how-it-works">How it works</a>
+        <a href="#version-2">2.0.0</a>
         <a href="#use-cases">Use cases</a>
         <a href="#docs">Docs</a>
         <a href="https://github.com/fedoragobrowse-design/harmonics-analysis">GitHub ↗</a>
@@ -47,6 +48,21 @@
           <p><span>Signal</span> A steady vowel produces a fundamental plus a related harmonic stack.</p>
           <p><span>Readout</span> The app makes that stack legible, not merely visible.</p>
           <p><span>Privacy</span> Every frame stays on your computer.</p>
+        </div>
+      </section>
+
+      <section id="version-2" class="release wrap">
+        <div class="release-heading">
+          <p class="eyebrow">VERSION 2.0.0</p>
+          <h2>More ways to practise, without more guesswork.</h2>
+          <p>Version 2.0.0 keeps the live spectrum at the centre, then adds careful tools for speech, songs, and practice—without turning a single note into a label about a person.</p>
+          <a class="button primary" href="https://github.com/fedoragobrowse-design/harmonics-analysis/releases/tag/v2.0.0">Read the 2.0.0 release ↗</a>
+        </div>
+        <div class="release-grid">
+          <article><span>SPEECH PROFILE</span><h3>Speech and singing stay separate.</h3><p>A 3–5 second conversational sample produces a spoken-pitch profile. Held vowels build singing-range evidence. Neither assigns gender or a fixed voice type.</p></article>
+          <article><span>SCORE CHECK</span><h3>Bring a song into the picture.</h3><p>Open MIDI or MuseScore files to inspect their written span, then compare it with an observed recording range—with clear warnings for multi-part scores.</p></article>
+          <article><span>PRACTICE CONTROLS</span><h3>Set the pace. Stop the mic.</h3><p>A local four-beat metronome runs from 30–300 BPM, while microphone mute stops the actual input stream rather than only hiding the display.</p></article>
+          <article><span>LOCAL MCP</span><h3>More context for local tools.</h3><p>The MCP server can inspect an exact MIDI/MuseScore file, compare its span with supplied observed notes, and explicitly launch the desktop app.</p></article>
         </div>
       </section>
 
@@ -98,6 +114,7 @@
             <a href="https://github.com/fedoragobrowse-design/harmonics-analysis/blob/main/docs/ARCHITECTURE.md"><span>02</span><strong>Architecture</strong><small>FFT pipeline, pitch detection, and UI flow</small></a>
             <a href="https://github.com/fedoragobrowse-design/harmonics-analysis/blob/main/docs/BUILDING.md"><span>03</span><strong>Build &amp; release</strong><small>Debian package, Windows executable, and CI</small></a>
             <a href="https://github.com/fedoragobrowse-design/harmonics-analysis/blob/main/docs/MCP.md"><span>04</span><strong>MCP server</strong><small>Local stdio integration and PCM frame analysis</small></a>
+            <a href="https://github.com/fedoragobrowse-design/harmonics-analysis/blob/main/docs/V2.0.0.md"><span>05</span><strong>Version 2.0.0 guide</strong><small>Speech, score, practice, and MCP additions</small></a>
           </div>
         </div>
       </section>
