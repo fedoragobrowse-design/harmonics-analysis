@@ -17,11 +17,16 @@ computer.
   you can see the overtone stack of the vowel you are holding.
 - **Plain-language readout** — the current note (e.g. `A3`), tuning offset in
   cents, and an overall "voice colour" (warm / balanced / bright).
+- **Windows-ready microphone capture** — choose any available input device;
+  clear errors explain how to recover if the default device is unavailable.
+- **Input-level meter** — immediately see whether the microphone is hearing
+  silence, a comfortable signal, or a level that may clip.
 - **Quiet baseline (noise calibration)** — two seconds of room silence set a
   per-bin noise floor; levels below it are gated out of the analysis.
 - **Record a take** — while recording, every voiced frame is accumulated into
   a take; when you finish, a summary shows the notes you sang in sequence,
-  your observed vocal range, and average energy at H1–H6.
+  a cautious range-based vocal label (bass, baritone, tenor, alto, or
+  soprano), pitch steadiness, and average energy at H1–H6.
 - **Identify a sound file** — analyse any file FFmpeg can decode (WAV, MP3,
   FLAC, OGG, …) through the same pipeline and get the same take summary.
 - **Freeze graph** — pause the drawing while capture continues.

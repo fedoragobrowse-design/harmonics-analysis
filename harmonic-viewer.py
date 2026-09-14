@@ -79,6 +79,10 @@ class TakeAnalysis:
     last_note: str | None = None
     harmonic_totals: list[float] = field(default_factory=lambda: [0.0] * 6)
     harmonic_counts: list[int] = field(default_factory=lambda: [0] * 6)
+    frequency_total: float = 0.0
+    frequency_square_total: float = 0.0
+    lowest_frequency: float | None = None
+    highest_frequency: float | None = None
 
     @classmethod
     def start(cls, level_count: int) -> "TakeAnalysis":
@@ -107,6 +111,10 @@ class TakeAnalysis:
             return
 
         self.voiced_frame_count += 1
+        self.frequency_total += fundamental
+        self.frequency_square_total += fundamental * fundamental
+        self.lowest_frequency = fundamental if self.lowest_frequency is None else min(self.lowest_frequency, fundamental)
+        self.highest_frequency = fundamental if self.highest_frequency is None else max(self.highest_frequency, fundamental)
         for index, level in enumerate(levels):
             self.level_totals[index] += level
         note = note_for_frequency(fundamental)
@@ -121,6 +129,19 @@ class TakeAnalysis:
                 break
             self.harmonic_totals[harmonic - 1] += levels[bin_index]
             self.harmonic_counts[harmonic - 1] += 1
+
+    def pitch_stability(self) -> str:
+        """Return a friendly steadiness description for the recorded pitch."""
+        if self.voiced_frame_count < 2:
+            return "Not enough steady pitch to rate"
+        average = self.frequency_total / self.voiced_frame_count
+        variance = max(0.0, self.frequency_square_total / self.voiced_frame_count - average * average)
+        spread_cents = 1200 * math.log2((average + math.sqrt(variance)) / average) if variance else 0.0
+        if spread_cents < 15:
+            return "Very steady"
+        if spread_cents < 35:
+            return "Mostly steady"
+        return "Expressive / changing pitch"
 
 
 def fft(values: list[complex]) -> list[complex]:
@@ -230,6 +251,28 @@ def voice_colour(levels: tuple[float, ...]) -> str:
     )[strongest]
 
 
+def vocal_range_label(take: TakeAnalysis) -> tuple[str, str]:
+    """Give a cautious, range-based voice label from the notes observed in a take."""
+    if take.lowest_frequency is None or take.highest_frequency is None:
+        return "Not enough voiced sound", "Hold a few clear notes to estimate a vocal range."
+    low = 69 + 12 * math.log2(take.lowest_frequency / 440.0)
+    high = 69 + 12 * math.log2(take.highest_frequency / 440.0)
+    profiles = (
+        ("Bass", 40, 64),
+        ("Baritone", 43, 67),
+        ("Tenor", 48, 72),
+        ("Alto", 53, 77),
+        ("Soprano", 60, 84),
+    )
+    # Choose the common range with the largest overlap; centres break a tie.
+    def score(profile: tuple[str, int, int]) -> tuple[float, float]:
+        _name, bottom, top = profile
+        overlap = max(0.0, min(high, top) - max(low, bottom))
+        return overlap, -abs((low + high) / 2 - (bottom + top) / 2)
+    name, _bottom, _top = max(profiles, key=score)
+    return name, f"Observed range: {note_for_frequency(take.lowest_frequency)} to {note_for_frequency(take.highest_frequency)}. This is a range estimate, not a voice diagnosis."
+
+
 class HarmonicViewer(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
@@ -242,6 +285,7 @@ class HarmonicViewer(tk.Tk):
         self.stop_event = threading.Event()
         self.frames: queue.Queue[SpectrumFrame | Exception] = queue.Queue(maxsize=2)
         self.process: subprocess.Popen[bytes] | None = None
+        self.input_stream: object | None = None
         self.worker: threading.Thread | None = None
         self.running = False
         self.noise_floor: tuple[float, ...] | None = None
@@ -253,6 +297,7 @@ class HarmonicViewer(tk.Tk):
         self.recording = False
         self.active_take: TakeAnalysis | None = None
         self.file_analysis_active = False
+        self.input_device: int | None = None
 
         self.status = tk.StringVar(value="Getting microphone ready…")
         self.recording_status = tk.StringVar(value="")
@@ -263,6 +308,7 @@ class HarmonicViewer(tk.Tk):
         self.noise_filter = tk.StringVar(value="Noise filter is off")
         self.detail = tk.StringVar(value="Cyan is what your microphone hears. Amber marks the harmonic pattern.")
         self.voice_quality = tk.StringVar(value="Listening for your voice colour")
+        self.input_level = tk.StringVar(value="Input level: waiting for microphone")
 
         self._build_ui()
         self._draw_grid()
@@ -419,6 +465,9 @@ class HarmonicViewer(tk.Tk):
         tk.Label(graph_panel, text="Live spectrum", fg="#d9b36b", bg=studio, font=("Sans", 14, "bold")).pack(anchor="w")
         tk.Label(graph_panel, textvariable=self.status, fg="#76dfe0", bg=studio, font=("Sans", 10, "bold"), wraplength=CANVAS_WIDTH, justify="left").pack(anchor="w", pady=(3, 2))
         tk.Label(graph_panel, textvariable=self.recording_status, fg="#f1a3a3", bg=studio, font=("Sans", 9, "bold"), wraplength=CANVAS_WIDTH, justify="left").pack(anchor="w", pady=(0, 7))
+        self.level_canvas = tk.Canvas(graph_panel, width=CANVAS_WIDTH, height=18, bg=self.scope_background, highlightthickness=0)
+        self.level_canvas.pack(anchor="w", pady=(0, 5))
+        tk.Label(graph_panel, textvariable=self.input_level, fg=header_muted, bg=studio, font=("Sans", 8, "bold")).pack(anchor="w", pady=(0, 5))
         self.canvas = tk.Canvas(
             graph_panel,
             width=CANVAS_WIDTH,
@@ -481,6 +530,18 @@ class HarmonicViewer(tk.Tk):
         self.freeze_button.pack(side="left", padx=(8, 0))
         tk.Button(
             controls,
+            text="Choose microphone",
+            command=self.choose_microphone,
+            bg="#244c60",
+            fg="#ffffff",
+            activebackground="#347087",
+            activeforeground="#ffffff",
+            relief="flat",
+            padx=15,
+            pady=8,
+        ).pack(side="left", padx=(8, 0))
+        tk.Button(
+            controls,
             text="Restart microphone",
             command=self.start_capture,
             bg="#244c60",
@@ -518,6 +579,38 @@ class HarmonicViewer(tk.Tk):
         self._draw_grid()
         if self.latest_frame is not None:
             self.draw_spectrum(self.latest_frame)
+
+    def choose_microphone(self) -> None:
+        """Offer Windows capture devices, so a disconnected default is recoverable."""
+        if os.name != "nt":
+            self.recording_status.set("Microphone selection uses your system's default input on this platform.")
+            return
+        try:
+            import sounddevice as sound
+            devices = [(index, device) for index, device in enumerate(sound.query_devices()) if device["max_input_channels"] > 0]
+        except Exception as error:
+            self.recording_status.set(f"Could not list microphones: {error}")
+            return
+        if not devices:
+            self.recording_status.set("No recording microphone was found. Connect one, then restart the microphone.")
+            return
+        popup = tk.Toplevel(self)
+        popup.title("Choose microphone")
+        popup.configure(bg=self.popup_background())
+        popup.resizable(False, False)
+        popup.transient(self)
+        body = tk.Frame(popup, bg=self.popup_background(), padx=18, pady=16)
+        body.pack(fill="both", expand=True)
+        tk.Label(body, text="Choose microphone", fg=self.popup_ink(), bg=self.popup_background(), font=("Sans", 15, "bold")).pack(anchor="w")
+        tk.Label(body, text="The app restarts capture with the selected input.", fg=self.popup_muted(), bg=self.popup_background(), font=("Sans", 9)).pack(anchor="w", pady=(3, 10))
+        for index, device in devices:
+            label = f"{device['name']} ({int(device['default_samplerate'])} Hz)"
+            tk.Button(body, text=label, anchor="w", command=lambda selected=index: self.set_microphone(selected, popup), bg=self.popup_button(), fg=self.popup_ink(), activebackground=self.popup_active(), activeforeground=self.popup_ink(), relief="flat", padx=10, pady=7, wraplength=450).pack(fill="x", pady=2)
+
+    def set_microphone(self, device_index: int, popup: tk.Toplevel) -> None:
+        self.input_device = device_index
+        popup.destroy()
+        self.start_capture()
 
 
     def _draw_grid(self) -> None:
@@ -576,6 +669,14 @@ class HarmonicViewer(tk.Tk):
 
     def stop_capture(self) -> None:
         self.stop_event.set()
+        stream = self.input_stream
+        if stream is not None:
+            try:
+                stream.abort()
+                stream.close()
+            except Exception:
+                pass
+        self.input_stream = None
         process = self.process
         if process and process.poll() is None:
             process.terminate()
@@ -662,25 +763,38 @@ class HarmonicViewer(tk.Tk):
             self.show_take_summary("Your recorded take", take)
 
     def show_take_summary(self, title: str, take: TakeAnalysis) -> None:
+        background = self.popup_background()
+        ink = self.popup_ink()
+        muted = self.popup_muted()
         summary = tk.Toplevel(self)
         summary.title(title)
-        summary.configure(bg="#111820")
+        summary.configure(bg=background)
         summary.resizable(False, False)
         summary.transient(self)
 
-        body = tk.Frame(summary, bg="#111820", padx=20, pady=18)
+        body = tk.Frame(summary, bg=background, padx=20, pady=18)
         body.pack(fill="both", expand=True)
         duration = take.frame_count * FRAME_SIZE / SAMPLE_RATE
-        tk.Label(body, text=title, fg="#f2f7fb", bg="#111820", font=("Sans", 19, "bold")).pack(anchor="w")
+        tk.Label(body, text=title, fg=ink, bg=background, font=("Sans", 19, "bold")).pack(anchor="w")
         tk.Label(
             body,
             text=f"{duration:.1f} seconds analysed locally",
-            fg="#b8c5d1",
-            bg="#111820",
+            fg=muted,
+            bg=background,
             font=("Sans", 10),
         ).pack(anchor="w", pady=(3, 14))
 
-        tk.Label(body, text="Notes you sang", fg="#91a8b8", bg="#111820", font=("Sans", 10, "bold")).pack(anchor="w")
+        details = tk.Frame(body, bg=background)
+        details.pack(fill="x", pady=(0, 15))
+        range_name, range_description = vocal_range_label(take)
+        range_card = tk.Frame(details, bg=self.popup_card(), padx=14, pady=12, highlightthickness=1, highlightbackground=self.popup_border())
+        range_card.pack(side="right", fill="y", padx=(14, 0))
+        tk.Label(range_card, text="Likely vocal range", fg=muted, bg=self.popup_card(), font=("Sans", 9, "bold")).pack(anchor="w")
+        tk.Label(range_card, text=range_name, fg=self.scope_harmonics, bg=self.popup_card(), font=("Sans", 18, "bold")).pack(anchor="w", pady=(2, 2))
+        tk.Label(range_card, text=range_description, fg=ink, bg=self.popup_card(), font=("Sans", 8), wraplength=190, justify="left").pack(anchor="w")
+        notes_area = tk.Frame(details, bg=background)
+        notes_area.pack(side="left", fill="both", expand=True)
+        tk.Label(notes_area, text="Notes you sang", fg=muted, bg=background, font=("Sans", 10, "bold")).pack(anchor="w")
         note_runs = [run for run in take.note_runs if run.frames >= 2]
         if note_runs:
             note_text = "  →  ".join(
@@ -690,24 +804,24 @@ class HarmonicViewer(tk.Tk):
         else:
             note_text = "No steady notes were detected. Try a clearer, held vowel."
         tk.Label(
-            body,
+            notes_area,
             text=note_text,
-            fg="#f6c85f",
-            bg="#111820",
+            fg=self.scope_harmonics,
+            bg=background,
             font=("Sans", 11, "bold"),
-            wraplength=610,
+            wraplength=390,
             justify="left",
-        ).pack(anchor="w", pady=(4, 15))
+        ).pack(anchor="w", pady=(4, 0))
 
-        tk.Label(body, text="Whole-take harmonics", fg="#91a8b8", bg="#111820", font=("Sans", 10, "bold")).pack(anchor="w")
+        tk.Label(body, text="Whole-take harmonics", fg=muted, bg=background, font=("Sans", 10, "bold")).pack(anchor="w")
         tk.Label(
             body,
             text="Average energy at H1–H6 across frames with a clear base note",
-            fg="#9aabba",
-            bg="#111820",
+            fg=muted,
+            bg=background,
             font=("Sans", 9),
         ).pack(anchor="w", pady=(2, 5))
-        harmonic_canvas = tk.Canvas(body, width=610, height=150, bg="#081820", highlightthickness=1, highlightbackground="#245164")
+        harmonic_canvas = tk.Canvas(body, width=610, height=150, bg=self.popup_card(), highlightthickness=1, highlightbackground=self.popup_border())
         harmonic_canvas.pack(anchor="w")
         harmonics = take.harmonic_averages()
         visible = [value for value in harmonics if value is not None]
@@ -718,31 +832,52 @@ class HarmonicViewer(tk.Tk):
                 left = 34 + index * 96
                 height = 0.0 if value is None else 100 * (value - floor) / max(ceiling - floor, 1.0)
                 harmonic_canvas.create_rectangle(left, 122 - height, left + 54, 122, fill="#f6b73c", outline="")
-                harmonic_canvas.create_text(left + 27, 136, text=f"H{index + 1}", fill="#d9e6ed", font=("Sans", 9, "bold"))
-                harmonic_canvas.create_text(left + 27, 114 - height, text="—" if value is None else f"{value:.0f}", fill="#f6c85f", font=("Sans", 8))
+                harmonic_canvas.create_text(left + 27, 136, text=f"H{index + 1}", fill=ink, font=("Sans", 9, "bold"))
+                harmonic_canvas.create_text(left + 27, 114 - height, text="—" if value is None else f"{value:.0f}", fill=self.scope_harmonics, font=("Sans", 8))
         else:
-            harmonic_canvas.create_text(305, 75, text="Hold a steady note to map its harmonics.", fill="#91a8b8", font=("Sans", 11))
+            harmonic_canvas.create_text(305, 75, text="Hold a steady note to map its harmonics.", fill=muted, font=("Sans", 11))
 
         average_levels = take.average_levels()
         tk.Label(
             body,
-            text=f"Overall voice colour: {voice_colour(average_levels)}",
-            fg="#d9e6ed",
-            bg="#111820",
+            text=f"Overall voice colour: {voice_colour(average_levels)}  ·  Pitch steadiness: {take.pitch_stability()}",
+            fg=ink,
+            bg=background,
             font=("Sans", 10),
         ).pack(anchor="w", pady=(12, 0))
         tk.Button(
             body,
             text="Close",
             command=summary.destroy,
-            bg="#26313a",
-            fg="#ffffff",
-            activebackground="#3a4954",
-            activeforeground="#ffffff",
+            bg=self.popup_button(),
+            fg=ink,
+            activebackground=self.popup_active(),
+            activeforeground=ink,
             relief="flat",
             padx=14,
             pady=7,
         ).pack(anchor="e", pady=(12, 0))
+
+    def popup_background(self) -> str:
+        return "#fff8e9" if self.theme_mode == "light" else "#111820"
+
+    def popup_card(self) -> str:
+        return "#f3ead6" if self.theme_mode == "light" else "#081820"
+
+    def popup_ink(self) -> str:
+        return "#192632" if self.theme_mode == "light" else "#f2f7fb"
+
+    def popup_muted(self) -> str:
+        return "#586b75" if self.theme_mode == "light" else "#91a8b8"
+
+    def popup_border(self) -> str:
+        return "#d1ae72" if self.theme_mode == "light" else "#245164"
+
+    def popup_button(self) -> str:
+        return "#e5dbc3" if self.theme_mode == "light" else "#26313a"
+
+    def popup_active(self) -> str:
+        return "#d1ae72" if self.theme_mode == "light" else "#3a4954"
 
     def choose_sound_file(self) -> None:
         if self.recording:
@@ -829,21 +964,38 @@ class HarmonicViewer(tk.Tk):
             import sounddevice as sound
 
             def callback(indata: buffer, _frames: int, _time: object, status: object) -> None:
-                if not status and not self.stop_event.is_set():
+                if not self.stop_event.is_set():
                     self.put_frame(analyze(bytes(indata)))
 
-            with sound.RawInputStream(
+            # Keep a stream reference so Restart/Quit can close PortAudio cleanly.
+            # Explicit settings make a bad device/default give a useful error instead
+            # of silently opening an incompatible input.
+            sound.check_input_settings(
+                device=self.input_device,
+                channels=CHANNELS,
+                samplerate=SAMPLE_RATE,
+                dtype="int16",
+            )
+            stream = sound.RawInputStream(
                 samplerate=SAMPLE_RATE,
                 channels=CHANNELS,
                 dtype="int16",
                 blocksize=FRAME_SIZE,
+                device=self.input_device,
+                latency="low",
+                never_drop_input=True,
                 callback=callback,
-            ):
+            )
+            self.input_stream = stream
+            with stream:
                 while not self.stop_event.wait(0.1):
                     pass
         except Exception as error:
             if not self.stop_event.is_set():
-                self.put_frame(error)
+                selected = "the selected microphone" if self.input_device is not None else "the default microphone"
+                self.put_frame(RuntimeError(f"Could not open {selected}. Use Choose microphone, then restart it. Details: {error}"))
+        finally:
+            self.input_stream = None
 
 
     def capture_loop(self) -> None:
@@ -944,6 +1096,7 @@ class HarmonicViewer(tk.Tk):
         levels = self.gate_noise(frame.levels)
         fundamental = detect_fundamental(levels)
         self.draw_voice_profile(levels)
+        self.draw_input_level(frame.rms_db)
 
 
         points: list[float] = []
@@ -987,6 +1140,20 @@ class HarmonicViewer(tk.Tk):
             self.status.set("Try holding one calm “aaa” for about one second.")
             noise_detail = " Noise baseline is on." if self.noise_floor is not None else ""
             self.detail.set(f"Input level {frame.rms_db:.1f} dBFS · a steady vowel makes the amber harmonic guides appear.{noise_detail}")
+
+    def draw_input_level(self, rms_db: float) -> None:
+        """Show a compact level meter so users can distinguish silence from bad pitch."""
+        self.level_canvas.delete("all")
+        width = CANVAS_WIDTH
+        ratio = max(0.0, min(1.0, (rms_db - MIN_DB) / (MAX_DB - MIN_DB)))
+        self.level_canvas.create_rectangle(0, 2, width, 16, fill=self.scope_grid, outline="")
+        color = "#cc4b4b" if rms_db > -6 else self.scope_harmonics if rms_db > -18 else self.scope_trace
+        self.level_canvas.create_rectangle(0, 2, width * ratio, 16, fill=color, outline="")
+        for marker in (-60, -30, -12, 0):
+            x = width * (marker - MIN_DB) / (MAX_DB - MIN_DB)
+            self.level_canvas.create_line(x, 1, x, 17, fill=self.scope_background)
+        guidance = "too quiet" if rms_db < -55 else "strong" if rms_db > -12 else "comfortable"
+        self.input_level.set(f"Input level: {rms_db:.1f} dBFS — {guidance}")
 
     def draw_voice_profile(self, levels: tuple[float, ...]) -> None:
         """Draw a compact, friendly spectral balance view beside the note."""
