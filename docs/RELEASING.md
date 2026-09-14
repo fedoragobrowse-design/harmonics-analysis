@@ -9,7 +9,7 @@ the signatures before checksums and release assets are produced. A self-signed
 certificate is accepted for development releases; it is trusted only inside the
 ephemeral GitHub runner while the signature is verified.
 
-Before tagging `v1.6.1` or a later version, an organization owner must add two
+Before tagging `v1.6.2` or a later version, an organization owner must add two
 GitHub Actions secrets to the repository:
 
 - `WINDOWS_CERTIFICATE_BASE64` — base64 of a password-protected code-signing

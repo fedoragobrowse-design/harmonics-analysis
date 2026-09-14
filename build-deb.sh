@@ -1,13 +1,13 @@
 #!/bin/sh
 set -eu
 name=harmonics-analysis
-version=1.6.1
+version=1.6.2
 stage="build/${name}_${version}_all"
 rm -rf "$stage"
 mkdir -p "$stage/DEBIAN" "$stage/usr/bin" "$stage/usr/lib/$name" "$stage/usr/share/applications"
 cat > "$stage/DEBIAN/control" <<'EOF'
 Package: harmonics-analysis
-Version: 1.6.1
+Version: 1.6.2
 Section: sound
 Priority: optional
 Architecture: all
