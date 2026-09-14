@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Harmonics Analysis is a private, local viewer for the pitch and harmonic shape of a voice or instrument.">
+    <title>Harmonics Analysis — hear the shape of a note</title>
+    <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="spectral.css">
+  </head>
+  <body>
+    <header class="nav wrap">
+      <a class="brand" href="#top" aria-label="Harmonics Analysis home"><span class="mark">∿</span> Harmonics Analysis</a>
+      <nav aria-label="Main navigation">
+        <a href="#how-it-works">How it works</a>
+        <a href="#use-cases">Use cases</a>
+        <a href="#docs">Docs</a>
+        <a href="https://github.com/fedoragobrowse-design/harmonics-analysis">GitHub ↗</a>
+      </nav>
+    </header>
+
+    <main id="top">
+      <section class="hero wrap">
+        <div class="hero-copy">
+          <p class="eyebrow">LOCAL VOICE + INSTRUMENT ANALYSIS</p>
+          <p class="hero-kicker"><span>H₁ → H₆</span> the overtone field</p>
+          <h1>A note is a family, not a dot.</h1>
+          <p class="lede">Harmonics Analysis turns a microphone or sound file into a live, readable map of pitch, overtones, tuning, and tone colour—without sending audio anywhere.</p>
+          <div class="actions">
+            <a class="button primary" href="https://github.com/fedoragobrowse-design/harmonics-analysis/releases">Download a release ↗</a>
+            <a class="button quiet" href="#how-it-works">Explore the guide</a>
+          </div>
+          <ul class="proof" aria-label="Product highlights">
+            <li><strong>Private</strong> zero uploads</li>
+            <li><strong>Wide-range</strong> 55–1,200 Hz</li>
+            <li><strong>Guided</strong> H1–H6 positions</li>
+          </ul>
+        </div>
+        <figure class="screen hero-screen">
+          <img src="assets/live-spectrum.svg" alt="Harmonics Analysis live spectrum interface showing an A3 note, harmonic guide lines, and a cyan spectrum trace.">
+          <figcaption>Live spectrum view · A3 at 220 Hz</figcaption>
+        </figure>
+      </section>
+
+      <section class="signal-band">
+        <div class="wrap metrics">
+          <p><span>Signal</span> A steady vowel produces a fundamental plus a related harmonic stack.</p>
+          <p><span>Readout</span> The app makes that stack legible, not merely visible.</p>
+          <p><span>Privacy</span> Every frame stays on your computer.</p>
+        </div>
+      </section>
+
+      <section id="how-it-works" class="wrap section">
+        <div class="section-heading">
+          <p class="eyebrow">THE SIGNAL PATH</p>
+          <h2>From sound to a useful explanation.</h2>
+          <p>Designed for curious singers, teachers, and musicians—not only signal-processing specialists.</p>
+        </div>
+        <ol class="steps">
+          <li><span>1</span><h3>Capture</h3><p>Use a microphone or open a sound file. Audio is processed in memory locally.</p></li>
+          <li><span>2</span><h3>Find the note</h3><p>A 4,096-sample FFT and harmonic scoring estimate the fundamental and confidence.</p></li>
+          <li><span>3</span><h3>Read the stack</h3><p>Amber H1–H6 guides show where a note’s overtones should land against the measured spectrum.</p></li>
+          <li><span>4</span><h3>Keep a take</h3><p>Record a phrase for note runs, steadiness, sustained range, and average harmonic energy.</p></li>
+        </ol>
+      </section>
+
+      <section class="showcase">
+        <div class="wrap showcase-grid">
+          <div class="showcase-copy">
+            <p class="eyebrow">A SPECTRUM WITH CONTEXT</p>
+            <h2>Pitch is only the beginning.</h2>
+            <p>The live view identifies the note and tuning offset, then relates the visible peaks to the harmonic family. The voice-colour panel summarizes where energy is concentrated: warm, balanced, or bright.</p>
+            <dl>
+              <div><dt>Cyan trace</dt><dd>The sound arriving at the microphone</dd></div>
+              <div><dt>Amber guides</dt><dd>Expected positions for H1 through H6</dd></div>
+              <div><dt>Quiet baseline</dt><dd>A per-bin noise floor that helps reject room hum</dd></div>
+            </dl>
+          </div>
+          <figure class="screen"><img src="assets/take-summary.svg" alt="Example Harmonics Analysis take summary showing notes sung, sustained range, pitch steadiness, and a harmonic energy chart."><figcaption>Recorded take summary · notes, range, steadiness, and H1–H6</figcaption></figure>
+        </div>
+      </section>
+
+      <section id="use-cases" class="wrap section usecases">
+        <div class="section-heading"><p class="eyebrow">USE CASES</p><h2>Useful when you need feedback you can see.</h2></div>
+        <div class="cards">
+          <article><p class="card-number">VOICE PRACTICE</p><h3>Practice a sustained vowel</h3><p>Hold “ah” or “oo” and watch the fundamental settle while the overtone pattern develops. Use the tuning readout to hear and see small corrections.</p></article>
+          <article><p class="card-number">RESONANCE</p><h3>Compare vocal tone</h3><p>Try the same pitch with different resonance choices. The harmonic peaks and voice-colour strip make changes in brightness and warmth concrete.</p></article>
+          <article><p class="card-number">PHRASE REVIEW</p><h3>Review a phrase</h3><p>Record a take to see a cautious sequence of sustained notes, pitch steadiness, and the harmonic balance across the phrase.</p></article>
+          <article><p class="card-number">INSTRUMENTS</p><h3>Inspect an instrument or file</h3><p>Switch to instrument mode or decode a WAV, MP3, FLAC, or OGG file through the same local analysis pipeline.</p></article>
+        </div>
+      </section>
+
+      <section id="docs" class="docs-section">
+        <div class="wrap docs-grid">
+          <div><p class="eyebrow">DOCUMENTATION</p><h2>Start here, then go deeper.</h2><p>Everything needed to run, build, integrate, or understand the analyzer lives in the repository.</p></div>
+          <div class="doc-links">
+            <a href="https://github.com/fedoragobrowse-design/harmonics-analysis#install"><span>01</span><strong>Install &amp; requirements</strong><small>Linux, Windows, and source setup</small></a>
+            <a href="https://github.com/fedoragobrowse-design/harmonics-analysis/blob/main/docs/ARCHITECTURE.md"><span>02</span><strong>Architecture</strong><small>FFT pipeline, pitch detection, and UI flow</small></a>
+            <a href="https://github.com/fedoragobrowse-design/harmonics-analysis/blob/main/docs/BUILDING.md"><span>03</span><strong>Build &amp; release</strong><small>Debian package, Windows executable, and CI</small></a>
+            <a href="https://github.com/fedoragobrowse-design/harmonics-analysis/blob/main/docs/MCP.md"><span>04</span><strong>MCP server</strong><small>Local stdio integration and PCM frame analysis</small></a>
+          </div>
+        </div>
+      </section>
+
+      <section class="privacy wrap"><div><p class="eyebrow">PRIVACY BY DESIGN</p><h2>Your microphone is not content for a server.</h2></div><p>Harmonics Analysis does not require an account, send telemetry, or upload microphone and file audio. Recordings are analysed in memory and summaries can be exported as text without including the audio itself.</p></section>
+    </main>
+    <footer class="wrap"><span>Harmonics Analysis</span><span>Built for listening closely.</span><a href="https://github.com/fedoragobrowse-design/harmonics-analysis">Source on GitHub ↗</a></footer>
+  </body>
+</html>
