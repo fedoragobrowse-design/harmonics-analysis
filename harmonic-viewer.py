@@ -983,7 +983,6 @@ class HarmonicViewer(tk.Tk):
                 blocksize=FRAME_SIZE,
                 device=self.input_device,
                 latency="low",
-                never_drop_input=True,
                 callback=callback,
             )
             self.input_stream = stream

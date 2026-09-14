@@ -29,4 +29,4 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: Harmonics-Analysis-Debian
-          path: harmonics-analysis_1.1.0_all.deb
+          path: harmonics-analysis_1.1.1_all.deb

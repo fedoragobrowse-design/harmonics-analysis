@@ -4,8 +4,8 @@
 
 ```sh
 ./build-deb.sh
-# → harmonics-analysis_1.1.0_all.deb
-sudo apt install ./harmonics-analysis_1.1.0_all.deb
+# → harmonics-analysis_1.1.1_all.deb
+sudo apt install ./harmonics-analysis_1.1.1_all.deb
 ```
 
 The script stages a `build/` tree with:
@@ -47,7 +47,7 @@ It builds on both platforms in parallel and uploads the artefacts
 (`Harmonics-Analysis-Windows` / `Harmonics-Analysis-Debian`). Release steps:
 
 ```sh
-git tag v1.1.0 && git push origin v1.1.0
+git tag v1.1.1 && git push origin v1.1.1
 ```
 
 then attach the downloaded artefacts to a GitHub release (`gh release create`).
