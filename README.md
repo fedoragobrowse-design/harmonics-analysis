@@ -104,14 +104,16 @@ Details, constants, and the data flow are in
 
 ## Building
 
-- Debian package: `./build-deb.sh` → `harmonics-analysis_1.7.0_all.deb`
+- Debian package: `./build-deb.sh` → `harmonics-analysis_2.0.0_all.deb`
 - Windows exe: see [`docs/BUILDING.md`](docs/BUILDING.md)
 - CI: pushing a tag `v*` runs `.github/workflows/build-release.yml`, which
   builds both artefacts, SHA-256 checksum sidecars, and the GitHub Release that
   the in-app updater uses. A manual dispatch validates build artefacts only.
 
-For tagged releases, the Windows assets must pass Authenticode signing and
-verification. See [`docs/RELEASING.md`](docs/RELEASING.md).
+Windows assets include SHA-256 sidecar files. Verify the checksum before
+running a download; the current release workflow produces unsigned executables,
+so Windows may show an “Unknown publisher” warning. See
+[`docs/RELEASING.md`](docs/RELEASING.md).
 
 ## Repository layout
 

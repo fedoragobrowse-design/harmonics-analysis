@@ -1,42 +1,24 @@
-# Release and signing guide
+# Release guide
 
-## Windows code signing
+## Windows distribution
 
-Every tagged release is configured to require Authenticode signatures on both
-`Harmonics-Analysis-Windows.exe` and `Harmonics-Analysis-MCP-Windows.exe`.
-The workflow signs with SHA-256 and verifies the signatures before checksums
-and release assets are produced. Its signing step has a five-minute timeout so
-a signing-service outage fails safely. Development certificates are self-signed
-and deliberately do not use an external timestamp service; configure one when
-replacing it with an OV or EV certificate. A self-signed
-certificate is accepted for development releases; it is trusted only inside the
-ephemeral GitHub runner while the signature is verified.
+Tagged releases build `Harmonics-Analysis-Windows.exe` and
+`Harmonics-Analysis-MCP-Windows.exe` without Authenticode signing, plus a
+SHA-256 sidecar for each file. This avoids a certificate-service failure from
+blocking Linux or Windows releases, but Windows may show an “Unknown publisher”
+warning. Users should download only from the GitHub Release and verify the
+matching checksum before running the file.
 
-Before tagging `v1.7.0` or a later version, an organization owner must add two
-GitHub Actions secrets to the repository:
-
-- `WINDOWS_CERTIFICATE_BASE64` — base64 of a password-protected code-signing
-  `.pfx` certificate. A self-signed certificate can exercise the signing
-  pipeline, while an OV or EV Authenticode certificate issued to the release
-  publisher is required for normal end-user trust.
-- `WINDOWS_CERTIFICATE_PASSWORD` — the certificate's password.
-
-Never commit a certificate, private key, password, or a base64 certificate
-value to this repository. Without both secrets, a tagged workflow fails before
-it can publish an unsigned Windows release.
-
-Self-signed certificates prove the release was not modified after it was
-signed, but Windows does not trust their publisher by default and may show a
-security warning. Replace the development certificate with an OV or EV
-certificate before presenting the app as generally trusted.
+An OV or EV Authenticode certificate can be added in a future release workflow
+once it is available and tested. Never commit a certificate or private key.
 
 ## Safety checks before publishing
 
 1. Run `python3 -m unittest -v` and `./build-deb.sh` locally.
 2. Confirm the application and MCP versions match the intended tag.
 3. Push the commit, then tag and push `v<version>`.
-4. Verify the Windows job completes the MCP startup smoke test and Authenticode
-   verification; verify the Debian job produces its checksum sidecar.
+4. Verify the Windows job completes the MCP startup smoke test and produces
+   both checksum sidecars; verify the Debian job produces its checksum sidecar.
 5. Download the release assets and compare each SHA-256 sidecar before manual
    installation.
 

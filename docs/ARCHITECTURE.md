@@ -122,11 +122,9 @@ OS (`system_theme`: Windows registry, else `GTK_THEME`).
   so the released exe needs nothing installed.
 - `.github/workflows/build-release.yml` builds both artefacts on `v*` tags.
 - The Windows release job smoke-tests the packaged MCP executable after
-  building it. Tagged releases require a password-protected code-signing
-  certificate stored only in GitHub Actions secrets; the job signs and verifies
-  both Windows executables before a release can be published. A self-signed
-  development certificate is trusted only for that isolated CI verification;
-  an OV or EV certificate is needed for normal Windows publisher trust.
+  building it, then publishes SHA-256 sidecars for both unsigned executables.
+  Windows may show an “Unknown publisher” warning until an OV or EV Authenticode
+  certificate is available and the signing pipeline is reintroduced.
 - Updates are downloaded to a temporary file, size-limited, checksum-verified,
   and atomically promoted. Windows retains a rollback copy during replacement;
   Linux stages the package in `/var/tmp` so APT's sandbox can read it.
