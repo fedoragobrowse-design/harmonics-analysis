@@ -22,7 +22,7 @@ ffmpeg (file decode) ───────────────────�
 | Transform | `fft()` | iterative radix-2, in-place bit-reversal; `FRAME_SIZE` is a power of two |
 | Levels | dBFS per bin | `20·log10(magnitude·2/N / 32768)`, clamped at −80 dB floor |
 | RMS | `rms_db` | frame loudness used for the −55 dB voiced/unvoiced threshold |
-| Pitch | `detect_fundamental()` | strongest bin between 70 and 400 Hz, parabolic interpolation for sub-bin resolution; returns `None` below −58 dB peak |
+| Pitch | `estimate_pitch()` | harmonic-summation candidate scoring from 55 to 1,200 Hz, using up to six partials, then parabolic interpolation; returns a confidence score as well as the base note |
 
 ### Constants (`SAMPLE_RATE`, `FRAME_SIZE`, …)
 
@@ -52,8 +52,10 @@ While recording, every frame goes through `TakeAnalysis.add_frame`:
   consecutive equal notes extend a `NoteRun`, a change starts a new one;
 - the level at each of H1–H6 (bin `round(f·h·FRAME_SIZE/SAMPLE_RATE)`) feeds
   `harmonic_totals`/`harmonic_counts`, giving `harmonic_averages()`;
-- the running mean pitch classifies the observed vocal range
-  (`observed_vocal_range`: Bass → Soprano labels by average pitch).
+- only a run of at least three nearby pitch frames contributes to a vocal
+  range; this excludes short speech-like pitch changes. The 5th–95th
+  percentile of those sustained pitches produces the cautious range label,
+  rather than classifying a voice from its average pitch.
 
 `show_take_summary` renders the finished take: note sequence with durations,
 observed range, an H1–H6 bar chart, and overall voice colour
@@ -66,8 +68,12 @@ to the same raw PCM format and the frames feed a fresh `TakeAnalysis`.
 ## Threading and the UI
 
 - `capture_loop` (Linux) spawns `arecord -f S16_LE -r 48000 -c 1 -t raw -` and
-  reads exactly `FRAME_SIZE·2` bytes per frame. `capture_windows_loop` uses
-  `sounddevice` with a callback. File analysis runs in a worker thread.
+  reads exactly `FRAME_SIZE·2` bytes per frame. On Windows,
+  `capture_windows_loop` validates the selected input at 48 kHz first, then
+  retries its native shared-mode rate and resamples PCM blocks to 48 kHz.
+  A capture generation and per-run stop event prevent an old stream from
+  leaking frames after a microphone change. File analysis runs in a worker
+  thread.
 - Frames cross to the UI thread through a bounded `queue.Queue`
   (`put_frame` drops the oldest frame on overflow, keeping the display live);
   `consume_frames` drains it via Tk `after` callbacks, so only the latest

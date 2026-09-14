@@ -17,16 +17,25 @@ computer.
   you can see the overtone stack of the vowel you are holding.
 - **Plain-language readout** — the current note (e.g. `A3`), tuning offset in
   cents, and an overall "voice colour" (warm / balanced / bright).
-- **Windows-ready microphone capture** — choose any available input device;
-  clear errors explain how to recover if the default device is unavailable.
+- **Windows-ready microphone capture** — choose the Windows default or a named
+  input, with host API shown for each device; capture tries 48 kHz then the
+  device's native shared-mode rate and normalizes it for the analyser.
+- **Pitch confidence** — harmonic evidence ranks each live note as clear or
+  tentative, rather than pretending a noisy/speech frame is a certain pitch.
+- **Wide held-note tracking** — low and high sustained vowels are supported
+  from 55–1,200 Hz; short speech-like changes are shown live but excluded from
+  vocal-range labels.
+- **Verified updates** — the optional updater checks the latest stable GitHub
+  Release, verifies its SHA-256 checksum, replaces the Windows `.exe` on
+  restart, or downloads the Linux `.deb` ready for a normal `apt install`.
 - **Input-level meter** — immediately see whether the microphone is hearing
   silence, a comfortable signal, or a level that may clip.
 - **Quiet baseline (noise calibration)** — two seconds of room silence set a
   per-bin noise floor; levels below it are gated out of the analysis.
 - **Record a take** — while recording, every voiced frame is accumulated into
   a take; when you finish, a summary shows the notes you sang in sequence,
-  a cautious range-based vocal label (bass, baritone, tenor, alto, or
-  soprano), pitch steadiness, and average energy at H1–H6.
+  a cautious sustained-range label (bass, baritone, tenor, alto, or soprano),
+  pitch steadiness, and average energy at H1–H6.
 - **Identify a sound file** — analyse any file FFmpeg can decode (WAV, MP3,
   FLAC, OGG, …) through the same pipeline and get the same take summary.
 - **Freeze graph** — pause the drawing while capture continues.
@@ -45,7 +54,7 @@ computer.
 ### Debian / Ubuntu (from the `.deb`)
 
 ```sh
-sudo apt install ./harmonics-analysis_1.0.0_all.deb
+sudo apt install ./harmonics-analysis_1.5.0_all.deb
 ```
 
 This installs a `harmonics-analysis` command and a desktop launcher.
@@ -59,7 +68,7 @@ sudo apt install python3-tk alsa-utils ffmpeg   # Debian/Ubuntu
 
 ### Windows
 
-Download `Harmonics Analysis.exe` from the latest GitHub release (built
+Download `Harmonics-Analysis-Windows.exe` from the latest GitHub release (built
 automatically for every `v*` tag) and run it. FFmpeg is bundled inside.
 
 ## How it works (short version)
@@ -68,9 +77,10 @@ automatically for every `v*` tag) and run it. FFmpeg is bundled inside.
    `sounddevice`); sound files are decoded to the same format by FFmpeg.
 2. **Frame analysis** — each 4 096-sample frame is windowed, transformed with
    a radix-2 FFT, and converted to dB levels for 0–5 kHz bins.
-3. **Pitch detection** — the strongest peak between 70 and 400 Hz is
-   refined with parabolic interpolation to a sub-bin frequency and mapped to
-   the nearest equal-temperament note.
+3. **Pitch detection** — harmonic summation scores a possible base note
+   against up to six overtones between 55 and 1,200 Hz, then refines it with
+   parabolic interpolation. This avoids treating a loud overtone as the base
+   note and covers unusually low and high held vowels.
 4. **Aggregation** — voiced frames (above −55 dB RMS, above the noise floor)
    accumulate into note runs, per-bin level totals, and harmonic totals.
 
@@ -79,10 +89,11 @@ Details, constants, and the data flow are in
 
 ## Building
 
-- Debian package: `./build-deb.sh` → `harmonics-analysis_1.0.0_all.deb`
+- Debian package: `./build-deb.sh` → `harmonics-analysis_1.5.0_all.deb`
 - Windows exe: see [`docs/BUILDING.md`](docs/BUILDING.md)
-- CI: pushing a tag `v*` (or dispatching it) runs
-  `.github/workflows/build-release.yml`, which builds both artefacts.
+- CI: pushing a tag `v*` runs `.github/workflows/build-release.yml`, which
+  builds both artefacts, SHA-256 checksum sidecars, and the GitHub Release that
+  the in-app updater uses. A manual dispatch validates build artefacts only.
 
 ## Repository layout
 

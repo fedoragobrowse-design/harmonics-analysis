@@ -9,16 +9,21 @@ plain language; no voice-analysis terminology is required.
 from __future__ import annotations
 
 import cmath
+import hashlib
+import json
 import math
 import os
 import queue
+import shutil
 import struct
 import subprocess
 import sys
+import tempfile
 import threading
 import tkinter as tk
+import urllib.request
 from dataclasses import dataclass, field
-from tkinter import filedialog
+from tkinter import filedialog, messagebox
 
 
 SAMPLE_RATE = 48_000
@@ -29,6 +34,11 @@ MIN_DB = -80.0
 MAX_DB = 0.0
 CANVAS_WIDTH = 670
 SPECTRUM_HEIGHT = 350
+MIN_PITCH_HZ = 55.0
+MAX_PITCH_HZ = 1_200.0
+VOICE_RMS_DB = -55.0
+APP_VERSION = "1.5.0"
+RELEASES_API = "https://api.github.com/repos/fedoragobrowse-design/harmonics-analysis/releases/latest"
 
 
 def system_theme() -> str:
@@ -57,11 +67,130 @@ def bundled_tool(name: str) -> str:
             return candidate
     return name
 
+
+def resample_pcm_16le(raw: bytes, source_rate: float) -> bytes:
+    """Convert one mono PCM block to the analysis rate without extra packages."""
+    if round(source_rate) == SAMPLE_RATE:
+        return raw
+    samples = struct.unpack(f"<{len(raw) // 2}h", raw)
+    output_count = max(1, round(len(samples) * SAMPLE_RATE / source_rate))
+    converted: list[int] = []
+    for output_index in range(output_count):
+        source_position = output_index * source_rate / SAMPLE_RATE
+        left = min(int(source_position), len(samples) - 1)
+        right = min(left + 1, len(samples) - 1)
+        fraction = source_position - left
+        converted.append(round(samples[left] + (samples[right] - samples[left]) * fraction))
+    return struct.pack(f"<{len(converted)}h", *converted)
+
+
+def windows_capture_candidates(sound: object, device_index: int | None) -> list[float]:
+    """Try 48 kHz first, then the selected device's shared-mode rate."""
+    device = sound.query_devices(device_index, "input")
+    native_rate = float(device["default_samplerate"])
+    return list(dict.fromkeys((float(SAMPLE_RATE), native_rate)))
+
+
+@dataclass(frozen=True)
+class UpdateInfo:
+    version: str
+    asset_url: str
+    checksum_url: str
+
+
+@dataclass
+class PitchLock:
+    """Small median filter that steadies the display without hiding a leap."""
+    values: list[float] = field(default_factory=list)
+
+    def update(self, frequency: float | None, confidence: float) -> float | None:
+        if frequency is None or confidence < 0.42:
+            self.values.clear()
+            return None
+        if self.values and abs(1200 * math.log2(frequency / self.values[-1])) > 350:
+            self.values.clear()
+        self.values.append(frequency)
+        del self.values[:-5]
+        return sorted(self.values)[len(self.values) // 2]
+
+
+def version_key(version: str) -> tuple[int, ...] | None:
+    """Parse stable vX.Y.Z-style tags without accepting prereleases."""
+    text = version.removeprefix("v")
+    if not text or any(not part.isdigit() for part in text.split(".")):
+        return None
+    return tuple(int(part) for part in text.split("."))
+
+
+def select_update(release: dict[str, object], current_version: str, windows: bool) -> UpdateInfo | None:
+    """Select a stable release asset only when it is newer than this app."""
+    tag = str(release.get("tag_name", ""))
+    candidate, current = version_key(tag), version_key(current_version)
+    if release.get("prerelease") or release.get("draft") or candidate is None or current is None or candidate <= current:
+        return None
+    assets = release.get("assets")
+    if not isinstance(assets, list):
+        return None
+    suffix = "Harmonics-Analysis-Windows.exe" if windows else "_all.deb"
+    selected = next((asset for asset in assets if isinstance(asset, dict) and str(asset.get("name", "")).endswith(suffix)), None)
+    if selected is None:
+        return None
+    name = str(selected.get("name", ""))
+    checksum = next((asset for asset in assets if isinstance(asset, dict) and str(asset.get("name", "")) == f"{name}.sha256"), None)
+    if checksum is None:
+        return None
+    asset_url, checksum_url = selected.get("browser_download_url"), checksum.get("browser_download_url")
+    if not isinstance(asset_url, str) or not isinstance(checksum_url, str):
+        return None
+    return UpdateInfo(tag.removeprefix("v"), asset_url, checksum_url)
+
+
+def fetch_update_info(windows: bool, opener: object = urllib.request.urlopen) -> UpdateInfo | None:
+    request = urllib.request.Request(RELEASES_API, headers={"Accept": "application/vnd.github+json", "User-Agent": f"Harmonics-Analysis/{APP_VERSION}"})
+    with opener(request, timeout=10) as response:
+        release = json.loads(response.read().decode("utf-8"))
+    if not isinstance(release, dict):
+        return None
+    return select_update(release, APP_VERSION, windows)
+
+
+def sha256_from_sidecar(data: bytes) -> str | None:
+    value = data.decode("ascii", errors="ignore").strip().split()
+    if not value or len(value[0]) != 64 or any(character not in "0123456789abcdefABCDEF" for character in value[0]):
+        return None
+    return value[0].lower()
+
+
+def download_verified(url: str, checksum_url: str, destination: str, opener: object = urllib.request.urlopen) -> None:
+    """Download an update atomically and verify its published SHA-256 first."""
+    with opener(checksum_url, timeout=15) as response:
+        expected = sha256_from_sidecar(response.read())
+    if expected is None:
+        raise RuntimeError("The release checksum is missing or invalid.")
+    directory = os.path.dirname(destination) or "."
+    os.makedirs(directory, exist_ok=True)
+    handle, temporary = tempfile.mkstemp(prefix=".harmonics-update-", dir=directory)
+    try:
+        with os.fdopen(handle, "wb") as output, opener(url, timeout=30) as response:
+            shutil.copyfileobj(response, output)
+        with open(temporary, "rb") as output:
+            actual = hashlib.file_digest(output, "sha256").hexdigest()
+        if actual != expected:
+            raise RuntimeError("The downloaded update did not match its SHA-256 checksum.")
+        os.replace(temporary, destination)
+    except Exception:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+        raise
+
 @dataclass(frozen=True)
 class SpectrumFrame:
     levels: tuple[float, ...]
     rms_db: float
     fundamental_hz: float | None
+    pitch_confidence: float = 0.0
 
 
 @dataclass
@@ -83,6 +212,8 @@ class TakeAnalysis:
     frequency_square_total: float = 0.0
     lowest_frequency: float | None = None
     highest_frequency: float | None = None
+    sustained_frequencies: list[float] = field(default_factory=list)
+    _stable_run: list[float] = field(default_factory=list)
 
     @classmethod
     def start(cls, level_count: int) -> "TakeAnalysis":
@@ -101,13 +232,15 @@ class TakeAnalysis:
 
     def add_frame(self, frame: SpectrumFrame, noise_floor: tuple[float, ...] | None) -> None:
         self.frame_count += 1
-        if frame.rms_db < -55.0:
+        if frame.rms_db < VOICE_RMS_DB or frame.fundamental_hz is None or frame.pitch_confidence < 0.42:
             self.last_note = None
+            self._stable_run.clear()
             return
         levels = gate_levels(frame.levels, noise_floor)
         fundamental = detect_fundamental(levels)
         if fundamental is None:
             self.last_note = None
+            self._stable_run.clear()
             return
 
         self.voiced_frame_count += 1
@@ -123,6 +256,14 @@ class TakeAnalysis:
         else:
             self.note_runs.append(NoteRun(note, 1))
             self.last_note = note
+        if self._stable_run and abs(1200 * math.log2(fundamental / self._stable_run[-1])) <= 70:
+            self._stable_run.append(fundamental)
+        else:
+            self._stable_run = [fundamental]
+        # Speech changes pitch rapidly.  Only sustained vowel-like sound is
+        # used for a range estimate, while live speech can still show a note.
+        if len(self._stable_run) >= 3:
+            self.sustained_frequencies.append(fundamental)
         for harmonic in range(1, 7):
             bin_index = round(fundamental * harmonic * FRAME_SIZE / SAMPLE_RATE)
             if bin_index >= len(levels):
@@ -193,19 +334,65 @@ def analyze(raw: bytes) -> SpectrumFrame:
         magnitude = abs(transform[index]) * 2.0 / FRAME_SIZE
         levels.append(20.0 * math.log10(max(magnitude / 32768.0, 1e-8)))
 
-    return SpectrumFrame(tuple(levels), rms_db, detect_fundamental(levels))
+    fundamental, confidence = estimate_pitch(levels)
+    return SpectrumFrame(tuple(levels), rms_db, fundamental, confidence)
+
+def _peak_level(levels: tuple[float, ...] | list[float], bin_position: float) -> tuple[float, float]:
+    """Return the strongest nearby bin and a sub-bin position."""
+    centre = round(bin_position)
+    if centre < 2 or centre >= len(levels) - 2:
+        return MIN_DB, float(centre)
+    strongest = max(range(centre - 1, centre + 2), key=levels.__getitem__)
+    left, middle, right = levels[strongest - 1], levels[strongest], levels[strongest + 1]
+    curve = left - 2.0 * middle + right
+    offset = 0.0 if curve == 0.0 else max(-0.5, min(0.5, 0.5 * (left - right) / curve))
+    return middle, strongest + offset
+
+
+def estimate_pitch(levels: tuple[float, ...] | list[float]) -> tuple[float | None, float]:
+    """Harmonic-summation F0 estimator, resilient to a weak fundamental.
+
+    Selecting the loudest FFT peak mistakes an overtone for the singer's base
+    note.  Here each possible base note is scored against up to six of its
+    harmonics; this handles both low notes and very high voices.
+    """
+    low_bin = max(2, math.ceil(MIN_PITCH_HZ * FRAME_SIZE / SAMPLE_RATE))
+    high_bin = min(len(levels) - 2, math.floor(MAX_PITCH_HZ * FRAME_SIZE / SAMPLE_RATE))
+    candidates: list[tuple[float, int, int, float]] = []
+    for base_bin in range(low_bin, high_bin + 1):
+        values: list[float] = []
+        positions: list[float] = []
+        for harmonic in range(1, 7):
+            harmonic_bin = base_bin * harmonic
+            if harmonic_bin >= len(levels) - 2:
+                break
+            level, position = _peak_level(levels, harmonic_bin)
+            values.append(level)
+            positions.append(position)
+        audible = sum(level > -58.0 for level in values)
+        if audible < 2:
+            continue
+        # dB above the display floor, with a modest preference for a real H1.
+        score = sum(max(0.0, level - MIN_DB) for level in values) / len(values)
+        score += max(0.0, values[0] - MIN_DB) * 0.18
+        candidates.append((score, base_bin, audible, positions[0]))
+    if not candidates:
+        return None, 0.0
+    candidates.sort(reverse=True)
+    score, base_bin, audible, first_position = candidates[0]
+    runner_up = candidates[1][0] if len(candidates) > 1 else MIN_DB
+    confidence = min(1.0, 0.30 + 0.11 * audible + max(0.0, score - runner_up) / 55.0)
+    if score < 17.0 or confidence < 0.42:
+        return None, confidence
+    # H1 gives the most accurate interpolation when present; otherwise the
+    # harmonic grid still provides a stable base-bin estimate.
+    position = first_position if levels[round(first_position)] > -58.0 else float(base_bin)
+    return position * SAMPLE_RATE / FRAME_SIZE, confidence
+
 
 def detect_fundamental(levels: tuple[float, ...] | list[float]) -> float | None:
-    """Estimate the strongest voice-range peak after optional noise gating."""
-    low_bin = max(1, math.ceil(70 * FRAME_SIZE / SAMPLE_RATE))
-    high_bin = min(len(levels) - 1, math.floor(400 * FRAME_SIZE / SAMPLE_RATE))
-    strongest = max(range(low_bin, high_bin + 1), key=levels.__getitem__)
-    if levels[strongest] <= -58.0:
-        return None
-    left, center, right = levels[strongest - 1], levels[strongest], levels[strongest + 1]
-    curve = left - 2.0 * center + right
-    offset = 0.0 if curve == 0.0 else max(-0.5, min(0.5, 0.5 * (left - right) / curve))
-    return (strongest + offset) * SAMPLE_RATE / FRAME_SIZE
+    """Compatibility wrapper used after noise gating."""
+    return estimate_pitch(levels)[0]
 
 
 def note_for_frequency(frequency_hz: float) -> str:
@@ -253,10 +440,15 @@ def voice_colour(levels: tuple[float, ...]) -> str:
 
 def vocal_range_label(take: TakeAnalysis) -> tuple[str, str]:
     """Give a cautious, range-based voice label from the notes observed in a take."""
-    if take.lowest_frequency is None or take.highest_frequency is None:
-        return "Not enough voiced sound", "Hold a few clear notes to estimate a vocal range."
-    low = 69 + 12 * math.log2(take.lowest_frequency / 440.0)
-    high = 69 + 12 * math.log2(take.highest_frequency / 440.0)
+    values = sorted(take.sustained_frequencies)
+    if len(values) < 6:
+        return "Need held notes", "Speech and brief pitch changes are ignored. Hold a low, middle, and high vowel."
+    low_frequency = values[max(0, round((len(values) - 1) * 0.05))]
+    high_frequency = values[min(len(values) - 1, round((len(values) - 1) * 0.95))]
+    low = 69 + 12 * math.log2(low_frequency / 440.0)
+    high = 69 + 12 * math.log2(high_frequency / 440.0)
+    if high - low < 3:
+        return "One held pitch", f"Observed: {note_for_frequency(low_frequency)}. Add sustained low and high vowels to estimate a range."
     profiles = (
         ("Bass", 40, 64),
         ("Baritone", 43, 67),
@@ -270,7 +462,7 @@ def vocal_range_label(take: TakeAnalysis) -> tuple[str, str]:
         overlap = max(0.0, min(high, top) - max(low, bottom))
         return overlap, -abs((low + high) / 2 - (bottom + top) / 2)
     name, _bottom, _top = max(profiles, key=score)
-    return name, f"Observed range: {note_for_frequency(take.lowest_frequency)} to {note_for_frequency(take.highest_frequency)}. This is a range estimate, not a voice diagnosis."
+    return name, f"Sustained range: {note_for_frequency(low_frequency)} to {note_for_frequency(high_frequency)}. This is a range estimate, not a voice diagnosis."
 
 
 class HarmonicViewer(tk.Tk):
@@ -298,6 +490,12 @@ class HarmonicViewer(tk.Tk):
         self.active_take: TakeAnalysis | None = None
         self.file_analysis_active = False
         self.input_device: int | None = None
+        self.capture_generation = 0
+        self.capture_rate = float(SAMPLE_RATE)
+        self.windows_overflow_count = 0
+        self.pitch_lock = PitchLock()
+        self.recent_note_names: list[str] = []
+        self.mic_retries = 0
 
         self.status = tk.StringVar(value="Getting microphone ready…")
         self.recording_status = tk.StringVar(value="")
@@ -309,6 +507,8 @@ class HarmonicViewer(tk.Tk):
         self.detail = tk.StringVar(value="Cyan is what your microphone hears. Amber marks the harmonic pattern.")
         self.voice_quality = tk.StringVar(value="Listening for your voice colour")
         self.input_level = tk.StringVar(value="Input level: waiting for microphone")
+        self.note_trail = tk.StringVar(value="Note trail: waiting")
+        self.range_coach = tk.StringVar(value="Range coach: hold one comfortable vowel")
 
         self._build_ui()
         self._draw_grid()
@@ -347,6 +547,11 @@ class HarmonicViewer(tk.Tk):
             self.scope_trace = "#58d7ff"
             self.scope_harmonics = "#f6b73c"
         self.configure(bg=studio)
+        self.studio = studio
+        self.paper = paper
+        self.ink = ink
+        self.muted_ink = muted_ink
+        self.line = line
 
         frame = tk.Frame(self, bg=studio, padx=22, pady=20)
         frame.pack(fill="both", expand=True)
@@ -397,9 +602,13 @@ class HarmonicViewer(tk.Tk):
         tk.Label(note_panel, textvariable=self.note_display, fg=amber, bg=paper, font=("Sans", 46, "bold")).pack(anchor="w", pady=(1, 0))
         tk.Label(note_panel, textvariable=self.base_note, fg=ink, bg=paper, font=("Sans", 10), wraplength=270, justify="left").pack(anchor="w")
         tk.Label(note_panel, textvariable=self.tuning, fg="#257981", bg=paper, font=("Sans", 9, "bold")).pack(anchor="w", pady=(3, 0))
+        tk.Label(note_panel, textvariable=self.note_trail, fg=muted_ink, bg=paper, font=("Sans", 8), wraplength=270, justify="left").pack(anchor="w", pady=(4, 0))
         tk.Frame(note_panel, height=2, bg=line).pack(fill="x", pady=15)
         tk.Label(note_panel, text="Harmonic family", fg=muted_ink, bg=paper, font=("Sans", 10, "bold")).pack(anchor="w")
-        tk.Label(note_panel, textvariable=self.recipe, fg=ink, bg=paper, font=("Sans", 10), wraplength=270, justify="left").pack(anchor="w", pady=(4, 0))
+        harmonic_text = tk.Frame(note_panel, height=44, bg=paper)
+        harmonic_text.pack(fill="x", pady=(4, 0))
+        harmonic_text.pack_propagate(False)
+        tk.Label(harmonic_text, textvariable=self.recipe, fg=ink, bg=paper, font=("Sans", 10), wraplength=270, justify="left").pack(anchor="w")
         tk.Label(
             note_panel,
             text="One held note naturally produces this related stack. It is not automatically a chord.",
@@ -432,6 +641,7 @@ class HarmonicViewer(tk.Tk):
         tk.Label(voice_scale, text="Balanced", fg=amber, bg=paper, font=("Sans", 8, "bold")).pack(side="left", expand=True)
         tk.Label(voice_scale, text="Bright", fg="#c0527b", bg=paper, font=("Sans", 8, "bold")).pack(side="right")
         tk.Label(note_panel, textvariable=self.voice_quality, fg=ink, bg=paper, font=("Sans", 9), wraplength=270, justify="left").pack(anchor="w", pady=(5, 0))
+        tk.Label(note_panel, textvariable=self.range_coach, fg="#37644a", bg=paper, font=("Sans", 8, "bold"), wraplength=270, justify="left").pack(anchor="w", pady=(5, 0))
         tk.Frame(note_panel, height=2, bg=line).pack(fill="x", pady=15)
         tk.Label(note_panel, text="Quiet-room filter", fg=muted_ink, bg=paper, font=("Sans", 10, "bold")).pack(anchor="w")
         tk.Label(note_panel, textvariable=self.noise_filter, fg="#37644a", bg=paper, font=("Sans", 9), wraplength=270, justify="left").pack(anchor="w", pady=(4, 8))
@@ -554,6 +764,18 @@ class HarmonicViewer(tk.Tk):
         ).pack(side="left", padx=(8, 0))
         tk.Button(
             controls,
+            text="Check for update",
+            command=self.check_for_update,
+            bg="#315f78",
+            fg="#ffffff",
+            activebackground="#46829f",
+            activeforeground="#ffffff",
+            relief="flat",
+            padx=15,
+            pady=8,
+        ).pack(side="left", padx=(8, 0))
+        tk.Button(
+            controls,
             text="Quit",
             command=self.quit_app,
             bg="#2b3943",
@@ -602,15 +824,76 @@ class HarmonicViewer(tk.Tk):
         body = tk.Frame(popup, bg=self.popup_background(), padx=18, pady=16)
         body.pack(fill="both", expand=True)
         tk.Label(body, text="Choose microphone", fg=self.popup_ink(), bg=self.popup_background(), font=("Sans", 15, "bold")).pack(anchor="w")
-        tk.Label(body, text="The app restarts capture with the selected input.", fg=self.popup_muted(), bg=self.popup_background(), font=("Sans", 9)).pack(anchor="w", pady=(3, 10))
+        tk.Label(body, text="The app checks the selected input, uses its native rate if needed, then restarts capture.", fg=self.popup_muted(), bg=self.popup_background(), font=("Sans", 9), wraplength=460, justify="left").pack(anchor="w", pady=(3, 10))
+        tk.Button(body, text="Use Windows default microphone", anchor="w", command=lambda: self.set_microphone(None, popup), bg=self.popup_button(), fg=self.popup_ink(), activebackground=self.popup_active(), activeforeground=self.popup_ink(), relief="flat", padx=10, pady=7).pack(fill="x", pady=2)
         for index, device in devices:
-            label = f"{device['name']} ({int(device['default_samplerate'])} Hz)"
+            host_api = sound.query_hostapis(device["hostapi"])["name"]
+            label = f"{device['name']} — {host_api} ({int(device['default_samplerate'])} Hz)"
             tk.Button(body, text=label, anchor="w", command=lambda selected=index: self.set_microphone(selected, popup), bg=self.popup_button(), fg=self.popup_ink(), activebackground=self.popup_active(), activeforeground=self.popup_ink(), relief="flat", padx=10, pady=7, wraplength=450).pack(fill="x", pady=2)
 
-    def set_microphone(self, device_index: int, popup: tk.Toplevel) -> None:
+    def set_microphone(self, device_index: int | None, popup: tk.Toplevel) -> None:
         self.input_device = device_index
         popup.destroy()
         self.start_capture()
+
+    def check_for_update(self) -> None:
+        """Check GitHub Releases on demand; microphone audio is never sent."""
+        self.recording_status.set("Checking GitHub Releases for an update…")
+        threading.Thread(target=self.check_for_update_worker, daemon=True, name="update-check").start()
+
+    def check_for_update_worker(self) -> None:
+        try:
+            update = fetch_update_info(os.name == "nt")
+            self.after(0, self.finish_update_check, update, None)
+        except Exception as error:
+            self.after(0, self.finish_update_check, None, str(error))
+
+    def finish_update_check(self, update: UpdateInfo | None, error: str | None) -> None:
+        if error:
+            self.recording_status.set("Could not check for updates.")
+            self.detail.set(f"Update check failed: {error}")
+            return
+        if update is None:
+            self.recording_status.set("")
+            self.detail.set(f"You are up to date (v{APP_VERSION}).")
+            return
+        self.recording_status.set(f"Version {update.version} is available.")
+        if messagebox.askyesno("Harmonics Analysis update", f"Version {update.version} is available from GitHub Releases. Download and verify it now?", parent=self):
+            threading.Thread(target=self.download_update_worker, args=(update,), daemon=True, name="update-download").start()
+
+    def download_update_worker(self, update: UpdateInfo) -> None:
+        try:
+            if os.name == "nt":
+                if not getattr(sys, "frozen", False):
+                    raise RuntimeError("Windows self-updates are available from the packaged .exe, not from a source checkout.")
+                current = os.path.abspath(sys.executable)
+                destination = f"{current}.new"
+                download_verified(update.asset_url, update.checksum_url, destination)
+                script = f"{current}.update.cmd"
+                quoted_current = subprocess.list2cmdline([current])
+                quoted_new = subprocess.list2cmdline([destination])
+                with open(script, "w", encoding="utf-8", newline="\r\n") as output:
+                    output.write(f"@echo off\r\nping 127.0.0.1 -n 3 > nul\r\nmove /Y {quoted_new} {quoted_current}\r\nstart \"\" {quoted_current}\r\ndel \"%~f0\"\r\n")
+                self.after(0, self.finish_windows_update, script, update.version)
+                return
+            destination = os.path.join(os.path.expanduser("~/Downloads"), f"harmonics-analysis_{update.version}_all.deb")
+            download_verified(update.asset_url, update.checksum_url, destination)
+            self.after(0, self.finish_linux_update, destination, update.version)
+        except Exception as error:
+            self.after(0, self.update_download_failed, str(error))
+
+    def finish_windows_update(self, script: str, version: str) -> None:
+        self.recording_status.set(f"Version {version} verified. Restarting to apply it…")
+        subprocess.Popen(["cmd", "/c", script], close_fds=True)
+        self.after(400, self.quit_app)
+
+    def finish_linux_update(self, destination: str, version: str) -> None:
+        self.recording_status.set(f"Version {version} downloaded and verified.")
+        messagebox.showinfo("Update ready", f"The verified package is ready:\n{destination}\n\nInstall it with:\nsudo apt install {destination}", parent=self)
+
+    def update_download_failed(self, error: str) -> None:
+        self.recording_status.set("Update was not installed.")
+        self.detail.set(f"The update download was rejected or failed: {error}")
 
 
     def _draw_grid(self) -> None:
@@ -654,7 +937,8 @@ class HarmonicViewer(tk.Tk):
 
     def start_capture(self) -> None:
         self.stop_capture()
-        self.stop_event.clear()
+        self.stop_event = threading.Event()
+        self.capture_generation += 1
         self.running = True
         self.note_display.set("—")
         self.base_note.set("Listening for a steady “aaa”")
@@ -664,7 +948,7 @@ class HarmonicViewer(tk.Tk):
         self.freeze_button.configure(text="Freeze graph")
         self.status.set("Listening — speak comfortably, not loudly.")
         self.detail.set("A steady sound makes the harmonic pattern easiest to see.")
-        self.worker = threading.Thread(target=self.capture_loop, daemon=True, name="harmonic-capture")
+        self.worker = threading.Thread(target=self.capture_loop, args=(self.stop_event, self.capture_generation), daemon=True, name="harmonic-capture")
         self.worker.start()
 
     def stop_capture(self) -> None:
@@ -847,6 +1131,18 @@ class HarmonicViewer(tk.Tk):
         ).pack(anchor="w", pady=(12, 0))
         tk.Button(
             body,
+            text="Export summary",
+            command=lambda: self.export_take_summary(title, take),
+            bg=self.popup_button(),
+            fg=ink,
+            activebackground=self.popup_active(),
+            activeforeground=ink,
+            relief="flat",
+            padx=14,
+            pady=7,
+        ).pack(anchor="w", pady=(12, 0))
+        tk.Button(
+            body,
             text="Close",
             command=summary.destroy,
             bg=self.popup_button(),
@@ -857,6 +1153,21 @@ class HarmonicViewer(tk.Tk):
             padx=14,
             pady=7,
         ).pack(anchor="e", pady=(12, 0))
+
+    def export_take_summary(self, title: str, take: TakeAnalysis) -> None:
+        """Save a small local text report; recording data itself is not kept."""
+        path = filedialog.asksaveasfilename(parent=self, title="Export take summary", defaultextension=".txt", initialfile="harmonics-take-summary.txt", filetypes=(("Text file", "*.txt"),))
+        if not path:
+            return
+        name, description = vocal_range_label(take)
+        note_runs = [f"{run.name} ({run.frames * FRAME_SIZE / SAMPLE_RATE:.1f}s)" for run in take.note_runs if run.frames >= 2]
+        report = "\n".join((title, f"Version: {APP_VERSION}", f"Vocal range: {name}", description, f"Pitch steadiness: {take.pitch_stability()}", f"Notes: {', '.join(note_runs) or 'No sustained notes'}", "", "Audio is analysed locally and is not included in this report."))
+        try:
+            with open(path, "w", encoding="utf-8") as output:
+                output.write(report + "\n")
+            self.recording_status.set(f"Take summary exported to {os.path.basename(path)}")
+        except OSError as error:
+            self.recording_status.set(f"Could not export summary: {error}")
 
     def popup_background(self) -> str:
         return "#fff8e9" if self.theme_mode == "light" else "#111820"
@@ -959,47 +1270,61 @@ class HarmonicViewer(tk.Tk):
         self.recording_status.set("")
         self.detail.set(f"Analysed {os.path.basename(file_path)} locally. The summary shows its notes and average harmonics.")
         self.show_take_summary(f"File: {os.path.basename(file_path)}", take)
-    def capture_windows_loop(self) -> None:
+    def capture_windows_loop(self, stop_event: threading.Event, generation: int) -> None:
         try:
             import sounddevice as sound
+            failures: list[str] = []
+            for rate in windows_capture_candidates(sound, self.input_device):
+                if stop_event.is_set() or generation != self.capture_generation:
+                    return
+                pending = bytearray()
 
-            def callback(indata: buffer, _frames: int, _time: object, status: object) -> None:
-                if not self.stop_event.is_set():
-                    self.put_frame(analyze(bytes(indata)))
+                def callback(indata: buffer, _frames: int, _time: object, status: object) -> None:
+                    if stop_event.is_set() or generation != self.capture_generation:
+                        return
+                    if status:
+                        self.windows_overflow_count += 1
+                    pending.extend(resample_pcm_16le(bytes(indata), rate))
+                    wanted = FRAME_SIZE * 2
+                    while len(pending) >= wanted:
+                        raw = bytes(pending[:wanted])
+                        del pending[:wanted]
+                        self.put_frame(analyze(raw))
 
-            # Keep a stream reference so Restart/Quit can close PortAudio cleanly.
-            # Explicit settings make a bad device/default give a useful error instead
-            # of silently opening an incompatible input.
-            sound.check_input_settings(
-                device=self.input_device,
-                channels=CHANNELS,
-                samplerate=SAMPLE_RATE,
-                dtype="int16",
-            )
-            stream = sound.RawInputStream(
-                samplerate=SAMPLE_RATE,
-                channels=CHANNELS,
-                dtype="int16",
-                blocksize=FRAME_SIZE,
-                device=self.input_device,
-                latency="low",
-                callback=callback,
-            )
-            self.input_stream = stream
-            with stream:
-                while not self.stop_event.wait(0.1):
-                    pass
+                try:
+                    # `latency=high` uses the Windows shared-mode buffer and is
+                    # much more reliable across USB, Bluetooth, WASAPI, and MME
+                    # inputs than assuming a low-latency 48 kHz endpoint.
+                    sound.check_input_settings(device=self.input_device, channels=CHANNELS, samplerate=rate, dtype="int16")
+                    stream = sound.RawInputStream(samplerate=rate, channels=CHANNELS, dtype="int16", blocksize=0, device=self.input_device, latency="high", callback=callback)
+                    self.capture_rate = rate
+                    self.input_stream = stream
+                    with stream:
+                        while not stop_event.wait(0.1):
+                            pass
+                    return
+                except Exception as error:
+                    failures.append(f"{rate:.0f} Hz: {error}")
+                    if self.input_stream is not None:
+                        try:
+                            self.input_stream.close()
+                        except Exception:
+                            pass
+                        self.input_stream = None
+            selected = "the selected microphone" if self.input_device is not None else "the Windows default microphone"
+            self.put_frame(RuntimeError(f"Could not open {selected}. Try another entry in Choose microphone. Attempts: {'; '.join(failures)}"))
         except Exception as error:
-            if not self.stop_event.is_set():
+            if not stop_event.is_set() and generation == self.capture_generation:
                 selected = "the selected microphone" if self.input_device is not None else "the default microphone"
                 self.put_frame(RuntimeError(f"Could not open {selected}. Use Choose microphone, then restart it. Details: {error}"))
         finally:
-            self.input_stream = None
+            if generation == self.capture_generation:
+                self.input_stream = None
 
 
-    def capture_loop(self) -> None:
+    def capture_loop(self, stop_event: threading.Event, generation: int) -> None:
         if os.name == "nt":
-            self.capture_windows_loop()
+            self.capture_windows_loop(stop_event, generation)
             return
         command = [
             "arecord",
@@ -1016,13 +1341,16 @@ class HarmonicViewer(tk.Tk):
             "raw",
             "-",
         ]
+        process: subprocess.Popen[bytes] | None = None
         try:
-            self.process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-            assert self.process.stdout is not None
+            process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            if generation == self.capture_generation:
+                self.process = process
+            assert process.stdout is not None
             pending = bytearray()
             wanted = FRAME_SIZE * 2
-            while not self.stop_event.is_set():
-                part = self.process.stdout.read(wanted - len(pending))
+            while not stop_event.is_set():
+                part = process.stdout.read(wanted - len(pending))
                 if not part:
                     raise RuntimeError("Microphone stream ended. Check your input device and restart it.")
                 pending.extend(part)
@@ -1032,13 +1360,13 @@ class HarmonicViewer(tk.Tk):
                 del pending[:wanted]
                 self.put_frame(analyze(raw))
         except Exception as error:
-            if not self.stop_event.is_set():
+            if not stop_event.is_set() and generation == self.capture_generation:
                 self.put_frame(error)
         finally:
-            process = self.process
             if process and process.poll() is None:
                 process.terminate()
-            self.process = None
+            if self.process is process:
+                self.process = None
 
     def put_frame(self, frame: SpectrumFrame | Exception) -> None:
         try:
@@ -1065,7 +1393,12 @@ class HarmonicViewer(tk.Tk):
             self.recipe.set("Harmonics unavailable")
             self.status.set("Microphone error")
             self.detail.set(str(latest))
+            if os.name == "nt" and self.mic_retries < 2:
+                self.mic_retries += 1
+                self.recording_status.set(f"Microphone retry {self.mic_retries}/2 in 2 seconds…")
+                self.after(2_000, self.start_capture)
         elif isinstance(latest, SpectrumFrame):
+            self.mic_retries = 0
             self.latest_frame = latest
             if self.calibrating:
                 self.baseline_samples.append(latest.levels)
@@ -1093,7 +1426,8 @@ class HarmonicViewer(tk.Tk):
         self.canvas.delete("spectrum")
         self.canvas.delete("harmonics")
         levels = self.gate_noise(frame.levels)
-        fundamental = detect_fundamental(levels)
+        raw_fundamental, confidence = estimate_pitch(levels)
+        fundamental = self.pitch_lock.update(raw_fundamental, confidence)
         self.draw_voice_profile(levels)
         self.draw_input_level(frame.rms_db)
 
@@ -1105,22 +1439,35 @@ class HarmonicViewer(tk.Tk):
         if len(points) >= 4:
             self.canvas.create_line(*points, fill=self.scope_trace, width=2, smooth=True, tags="spectrum")
 
-        if frame.rms_db < -55.0:
+        if frame.rms_db < VOICE_RMS_DB:
             self.note_display.set("—")
             self.base_note.set("I cannot hear a steady note yet")
             self.tuning.set("")
             self.recipe.set("Hold a comfortable “aaa” for a moment")
+            self.note_trail.set("Note trail: listening")
+            self.range_coach.set("Range coach: start with a comfortable, steady vowel")
             self.status.set("Speak closer or check the microphone.")
             self.detail.set("Once the cyan line rises, the app will name your base note and its overtones.")
             return
 
-        if fundamental:
+        if fundamental and confidence >= 0.42:
             note = note_for_frequency(fundamental)
             self.note_display.set(note)
             self.base_note.set(f"Base note ≈ {fundamental:.0f} Hz")
             self.tuning.set(tuning_for_frequency(fundamental))
+            if not self.recent_note_names or self.recent_note_names[-1] != note:
+                self.recent_note_names.append(note)
+                del self.recent_note_names[:-8]
+            self.note_trail.set(f"Note trail: {'  →  '.join(self.recent_note_names)}")
+            if fundamental < 130:
+                self.range_coach.set("Range coach: low note held — now try a comfortable middle vowel")
+            elif fundamental > 350:
+                self.range_coach.set("Range coach: high note held — add a low vowel for a fuller range")
+            else:
+                self.range_coach.set("Range coach: middle note held — add a sustained low and high vowel")
             self.recipe.set(harmonic_note_stack(fundamental))
-            self.status.set("One sung note can create this whole stack. Cyan peaks near amber guides are its overtones.")
+            quality = "clear" if confidence >= 0.70 else "tentative"
+            self.status.set(f"{quality.capitalize()} pitch — cyan peaks near amber guides are its overtones.")
             for number in range(1, 9):
                 harmonic = fundamental * number
                 if harmonic > MAX_FREQUENCY:
@@ -1129,13 +1476,14 @@ class HarmonicViewer(tk.Tk):
                 self.canvas.create_line(x, 48, x, SPECTRUM_HEIGHT - 20, fill=self.scope_harmonics, dash=(3, 5), tags="harmonics")
             noise_detail = " Noise baseline is on." if self.noise_floor is not None else ""
             self.detail.set(
-                f"Input level {frame.rms_db:.1f} dBFS · nearest musical-note names for one natural harmonic series, not automatically a chord.{noise_detail}"
+                f"Input level {frame.rms_db:.1f} dBFS · pitch confidence {confidence:.0%}. Speech can show a note, but only held vowels affect range.{noise_detail}"
             )
         else:
             self.note_display.set("—")
             self.base_note.set("No steady base note yet")
             self.tuning.set("")
             self.recipe.set("Hold one calm “aaa” for about one second")
+            self.note_trail.set("Note trail: waiting for a clear pitch")
             self.status.set("Try holding one calm “aaa” for about one second.")
             noise_detail = " Noise baseline is on." if self.noise_floor is not None else ""
             self.detail.set(f"Input level {frame.rms_db:.1f} dBFS · a steady vowel makes the amber harmonic guides appear.{noise_detail}")
@@ -1151,7 +1499,7 @@ class HarmonicViewer(tk.Tk):
         for marker in (-60, -30, -12, 0):
             x = width * (marker - MIN_DB) / (MAX_DB - MIN_DB)
             self.level_canvas.create_line(x, 1, x, 17, fill=self.scope_background)
-        guidance = "too quiet" if rms_db < -55 else "strong" if rms_db > -12 else "comfortable"
+        guidance = "too quiet" if rms_db < VOICE_RMS_DB else "CLIPPING — lower microphone gain" if rms_db > -6 else "strong" if rms_db > -12 else "comfortable"
         self.input_level.set(f"Input level: {rms_db:.1f} dBFS — {guidance}")
 
     def draw_voice_profile(self, levels: tuple[float, ...]) -> None:

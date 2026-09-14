@@ -4,8 +4,8 @@
 
 ```sh
 ./build-deb.sh
-# → harmonics-analysis_1.1.1_all.deb
-sudo apt install ./harmonics-analysis_1.1.1_all.deb
+# → harmonics-analysis_1.5.0_all.deb
+sudo apt install ./harmonics-analysis_1.5.0_all.deb
 ```
 
 The script stages a `build/` tree with:
@@ -44,10 +44,12 @@ Build-time requirements live in `windows-requirements.txt`
 - manual `workflow_dispatch`
 
 It builds on both platforms in parallel and uploads the artefacts
-(`Harmonics-Analysis-Windows` / `Harmonics-Analysis-Debian`). Release steps:
+(`Harmonics-Analysis-Windows` / `Harmonics-Analysis-Debian`). A `v*` tag also
+creates the GitHub Release with both asset files and SHA-256 sidecars; those
+are the only files accepted by the in-app updater. Release steps:
 
 ```sh
-git tag v1.1.1 && git push origin v1.1.1
+git tag v1.5.0 && git push origin v1.5.0
 ```
 
 then attach the downloaded artefacts to a GitHub release (`gh release create`).
