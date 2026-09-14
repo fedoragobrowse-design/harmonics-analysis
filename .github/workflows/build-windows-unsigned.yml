@@ -1,0 +1,53 @@
+name: Build Windows release asset
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Git ref to package
+        required: true
+        default: v1.6.0
+        type: string
+      release_tag:
+        description: Existing GitHub Release tag to receive the files
+        required: true
+        default: v1.6.0
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    name: Build unsigned Windows app
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -r windows-requirements.txt
+      - run: choco install ffmpeg -y --no-progress
+      - name: Package application and checksum
+        shell: pwsh
+        run: |
+          $ffmpeg = (Get-Command ffmpeg).Source
+          pyinstaller --noconfirm --clean --windowed --onefile --name "Harmonics Analysis" --hidden-import sounddevice --collect-binaries sounddevice --add-binary "$ffmpeg;." harmonic-viewer.py
+          Copy-Item "dist/Harmonics Analysis.exe" "Harmonics-Analysis-Windows.exe"
+          $hash = (Get-FileHash "Harmonics-Analysis-Windows.exe" -Algorithm SHA256).Hash.ToLower()
+          Set-Content -Path "Harmonics-Analysis-Windows.exe.sha256" -Value "$hash  Harmonics-Analysis-Windows.exe" -NoNewline
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Harmonics-Analysis-Windows-v1.6.0
+          path: |
+            Harmonics-Analysis-Windows.exe
+            Harmonics-Analysis-Windows.exe.sha256
+      - name: Attach Windows files to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_tag }}
+          files: |
+            Harmonics-Analysis-Windows.exe
+            Harmonics-Analysis-Windows.exe.sha256
