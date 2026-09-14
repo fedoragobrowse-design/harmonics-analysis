@@ -12,7 +12,7 @@ replacing it with an OV or EV certificate. A self-signed
 certificate is accepted for development releases; it is trusted only inside the
 ephemeral GitHub runner while the signature is verified.
 
-Before tagging `v1.6.4` or a later version, an organization owner must add two
+Before tagging `v1.7.0` or a later version, an organization owner must add two
 GitHub Actions secrets to the repository:
 
 - `WINDOWS_CERTIFICATE_BASE64` — base64 of a password-protected code-signing
@@ -52,8 +52,8 @@ Windows capture first tries 48 kHz then a selected device's native shared-mode
 rate. A capture generation prevents stale streams from publishing frames after
 a restart. If a live stream stalls for four seconds, the app retries it twice;
 otherwise it shows a clear recovery message. Range reports intentionally
-require a tightly held vowel for about 0.8 seconds, while the live tuner remains
-available for ordinary speech and instruments.
+require a tightly held vowel for about 0.8 seconds. Conversational speech builds
+a separate spoken-pitch profile and never assigns a voice type or gender.
 
 Updates are downloaded to a temporary file, limited to 200 MiB, SHA-256
 verified, and atomically promoted only after verification. Windows moves the

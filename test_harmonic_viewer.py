@@ -67,6 +67,41 @@ class PitchRegressionTests(unittest.TestCase):
         label, _detail = VIEWER.vocal_range_label(take)
         self.assertEqual(label, "Low observed register")
 
+    def test_one_held_vowel_confirms_a_note_without_claiming_a_range(self):
+        take = VIEWER.TakeAnalysis.start(10)
+        take.sustained_frequencies.append(VIEWER.frequency_for_midi(60))
+        label, detail = VIEWER.vocal_range_label(take)
+        self.assertEqual(label, "Observed held note")
+        self.assertIn("C4", detail)
+
+    def test_speech_profile_uses_conversational_pitch_without_assigning_voice_type(self):
+        take = VIEWER.TakeAnalysis.start(10)
+        take.speech_frequencies.extend([110.0, 116.5, 123.5, 130.8] * VIEWER.SPEECH_PROFILE_FRAMES)
+        label, detail = VIEWER.speech_profile_label(take)
+        self.assertEqual(label, "Spoken-pitch profile")
+        self.assertIn("Typical speaking pitch", detail)
+        self.assertIn("not a voice type or gender label", detail)
+
+    def test_midi_score_parser_and_range_comparison(self):
+        # Header, one track, C4 then E4, then end-of-track.
+        track = bytes((0, 0x90, 60, 100, 96, 0x80, 60, 0, 0, 0x90, 64, 100, 96, 0x80, 64, 0, 0, 0xFF, 0x2F, 0))
+        midi = b"MThd" + struct.pack(">IHHH", 6, 0, 1, 96) + b"MTrk" + struct.pack(">I", len(track)) + track
+        score = VIEWER.parse_midi_bytes(midi, "exercise.mid")
+        self.assertEqual((score.lowest_midi, score.highest_midi), (60, 64))
+        take = VIEWER.TakeAnalysis.start(10)
+        take.sustained_frequencies.extend((VIEWER.frequency_for_midi(60), VIEWER.frequency_for_midi(62), VIEWER.frequency_for_midi(64)) * 4)
+        verdict, detail = VIEWER.score_singability(score, take)
+        self.assertEqual(verdict, "Likely within this sample")
+        self.assertIn("C4 to E4", detail)
+
+    def test_musescore_xml_parser_reads_pitches(self):
+        contents = b"<museScore><Score><Note><pitch>57</pitch></Note><Note><pitch>81</pitch></Note></Score></museScore>"
+        with tempfile.NamedTemporaryFile(suffix=".mscx") as score_file:
+            score_file.write(contents)
+            score_file.flush()
+            score = VIEWER.parse_musescore_file(score_file.name)
+        self.assertEqual((score.lowest_midi, score.highest_midi), (57, 81))
+
     def test_speech_like_pitch_changes_do_not_enter_range_collection(self):
         take = VIEWER.TakeAnalysis.start(int(VIEWER.MAX_FREQUENCY * VIEWER.FRAME_SIZE / VIEWER.SAMPLE_RATE) + 1)
         for frequency in (220.0, 245.0) * 8:

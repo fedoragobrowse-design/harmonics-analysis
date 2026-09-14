@@ -12,6 +12,7 @@ import base64
 import importlib.util
 import json
 import os
+import subprocess
 import sys
 from typing import Any
 
@@ -59,13 +60,107 @@ def tools() -> list[dict[str, object]]:
                 "additionalProperties": False,
             },
         },
+        {
+            "name": "inspect_score_file",
+            "description": "Read a local MIDI (.mid/.midi) or MuseScore (.mscz/.mscx) file and return its written pitch span. The file is parsed locally and never uploaded.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {"score_path": {"type": "string", "description": "Absolute or relative path to one local MIDI or MuseScore file."}},
+                "required": ["score_path"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "check_song_range",
+            "description": "Compare a local MIDI/MuseScore file's written range with recorded or otherwise measured MIDI notes. This is a pitch-range check, not a voice-type, gender, technique, or comfort judgement.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "score_path": {"type": "string", "description": "Absolute or relative path to one local MIDI or MuseScore file."},
+                    "observed_midi_notes": {"type": "array", "description": "At least three observed note numbers (0–127), usually from a voice take.", "items": {"type": "integer", "minimum": 0, "maximum": 127}, "minItems": 3, "maxItems": 4096},
+                },
+                "required": ["score_path", "observed_midi_notes"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "open_harmonics_app",
+            "description": "Open the local Harmonics Analysis desktop app, optionally with one local MIDI/MuseScore score ready to inspect. It never starts microphone recording.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {"score_path": {"type": "string", "description": "Optional local MIDI or MuseScore file to open in the app."}},
+                "additionalProperties": False,
+            },
+        },
     ]
+
+
+def checked_score_path(value: object) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("score_path must be a non-empty local path.")
+    path = os.path.abspath(os.path.expanduser(value))
+    if os.path.splitext(path)[1].lower() not in (".mid", ".midi", ".mscz", ".mscx"):
+        raise ValueError("Choose a MIDI (.mid/.midi) or MuseScore (.mscz/.mscx) file.")
+    if not os.path.isfile(path):
+        raise ValueError("The score file does not exist or is not a regular file.")
+    if os.path.getsize(path) > 32 * 1024 * 1024:
+        raise ValueError("Refusing score files larger than 32 MiB.")
+    return path
+
+
+def score_payload(score: object) -> dict[str, object]:
+    assert isinstance(score, VIEWER.ScoreAnalysis)
+    return {
+        "source_name": score.source_name,
+        "format": score.format_name,
+        "pitched_note_count": len(score.notes),
+        "track_count": score.track_count,
+        "lowest_note": VIEWER.note_for_midi(score.lowest_midi) if score.lowest_midi is not None else None,
+        "highest_note": VIEWER.note_for_midi(score.highest_midi) if score.highest_midi is not None else None,
+        "caution": "The result uses written pitched notes. Multi-part scores or accompaniment can widen the span.",
+    }
+
+
+def launch_app(score_path: str | None) -> None:
+    viewer_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "harmonic-viewer.py")
+    if getattr(sys, "frozen", False):
+        extension = ".exe" if os.name == "nt" else ""
+        candidate = os.path.join(os.path.dirname(sys.executable), f"Harmonics Analysis{extension}")
+        if not os.path.isfile(candidate):
+            raise RuntimeError("Could not find the Harmonics Analysis desktop application beside this MCP server.")
+        command = [candidate]
+    else:
+        command = [sys.executable, viewer_path]
+    if score_path is not None:
+        command.append(score_path)
+    subprocess.Popen(command, close_fds=os.name != "nt", start_new_session=os.name != "nt")
 
 
 def call_tool(name: str, arguments: object) -> dict[str, object]:
     if name == "harmonics_status":
         return text(json.dumps({"version": VIEWER.APP_VERSION, "sample_rate_hz": VIEWER.SAMPLE_RATE, "frame_samples": VIEWER.FRAME_SIZE, "pitch_range_hz": [VIEWER.MIN_PITCH_HZ, VIEWER.MAX_PITCH_HZ]}))
-    if name != "analyze_pcm_frame" or not isinstance(arguments, dict):
+    if not isinstance(arguments, dict):
+        return {"content": [{"type": "text", "text": "Unknown tool or invalid arguments."}], "isError": True}
+    try:
+        if name == "inspect_score_file":
+            return text(json.dumps(score_payload(VIEWER.load_score_file(checked_score_path(arguments.get("score_path"))))))
+        if name == "check_song_range":
+            path = checked_score_path(arguments.get("score_path"))
+            midi_notes = arguments.get("observed_midi_notes")
+            if not isinstance(midi_notes, list) or not 3 <= len(midi_notes) <= 4096 or any(not isinstance(note, int) or not 0 <= note <= 127 for note in midi_notes):
+                raise ValueError("observed_midi_notes must contain 3–4096 integer MIDI notes from 0 to 127.")
+            take = VIEWER.TakeAnalysis.start(0)
+            take.speech_frequencies.extend(VIEWER.frequency_for_midi(note) for note in midi_notes)
+            verdict, explanation = VIEWER.score_singability(VIEWER.load_score_file(path), take)
+            return text(json.dumps({"verdict": verdict, "explanation": explanation}))
+        if name == "open_harmonics_app":
+            optional_path = arguments.get("score_path")
+            path = checked_score_path(optional_path) if optional_path is not None else None
+            launch_app(path)
+            return text(json.dumps({"opened": True, "score_path": path, "message": "Harmonics Analysis was launched locally; microphone recording remains under the user's control."}))
+    except (OSError, ValueError, RuntimeError) as exc:
+        return {"content": [{"type": "text", "text": str(exc)}], "isError": True}
+    if name != "analyze_pcm_frame":
         return {"content": [{"type": "text", "text": "Unknown tool or invalid arguments."}], "isError": True}
     try:
         raw = base64.b64decode(arguments["pcm_s16le_base64"], validate=True)

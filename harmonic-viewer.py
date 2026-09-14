@@ -23,8 +23,10 @@ import threading
 import time
 import tkinter as tk
 import urllib.request
+import zipfile
 from dataclasses import dataclass, field
 from tkinter import filedialog, messagebox
+from xml.etree import ElementTree
 
 
 SAMPLE_RATE = 48_000
@@ -40,7 +42,8 @@ MAX_PITCH_HZ = 1_200.0
 VOICE_RMS_DB = -55.0
 RANGE_HOLD_FRAMES = 9  # about 0.77 seconds at the current frame size
 RANGE_STABILITY_CENTS = 35.0
-APP_VERSION = "1.6.4"
+SPEECH_PROFILE_FRAMES = 24  # roughly two seconds of voiced speech
+APP_VERSION = "1.7.0"
 RELEASES_API = "https://api.github.com/repos/fedoragobrowse-design/harmonics-analysis/releases/latest"
 MAX_BIN = min(FRAME_SIZE // 2, int(MAX_FREQUENCY * FRAME_SIZE / SAMPLE_RATE))
 HANN_WINDOW = tuple(0.5 - 0.5 * math.cos(2.0 * math.pi * index / (FRAME_SIZE - 1)) for index in range(FRAME_SIZE))
@@ -84,8 +87,8 @@ def about_text() -> str:
         "Voice mode reports observed registers cautiously. Instrument mode "
         "never applies a vocal classification.\n\n"
         "Updates come from GitHub Releases, require a SHA-256 match, and use "
-        "safe platform installers. The optional MCP server accepts only audio "
-        "frames supplied by its client and does not open microphones or watch files."
+        "safe platform installers. The optional MCP server accepts client-supplied "
+        "audio frames and explicitly selected score paths; it does not open microphones, watch files, or upload audio."
     )
 
 
@@ -253,6 +256,30 @@ class NoteRun:
     frames: int
 
 
+@dataclass(frozen=True)
+class ScoreNote:
+    midi: int
+    start: int
+    end: int
+    track: int = 0
+
+
+@dataclass(frozen=True)
+class ScoreAnalysis:
+    source_name: str
+    format_name: str
+    notes: tuple[ScoreNote, ...]
+    track_count: int = 1
+
+    @property
+    def lowest_midi(self) -> int | None:
+        return min((note.midi for note in self.notes), default=None)
+
+    @property
+    def highest_midi(self) -> int | None:
+        return max((note.midi for note in self.notes), default=None)
+
+
 @dataclass
 class TakeAnalysis:
     level_totals: list[float]
@@ -267,6 +294,7 @@ class TakeAnalysis:
     lowest_frequency: float | None = None
     highest_frequency: float | None = None
     sustained_frequencies: list[float] = field(default_factory=list)
+    speech_frequencies: list[float] = field(default_factory=list)
     _stable_run: list[float] = field(default_factory=list)
 
     @classmethod
@@ -302,6 +330,9 @@ class TakeAnalysis:
         self.frequency_square_total += fundamental * fundamental
         self.lowest_frequency = fundamental if self.lowest_frequency is None else min(self.lowest_frequency, fundamental)
         self.highest_frequency = fundamental if self.highest_frequency is None else max(self.highest_frequency, fundamental)
+        # Keep a separate speech corpus. It is deliberately never used to
+        # assign a voice type: conversational pitch is not vocal range.
+        self.speech_frequencies.append(fundamental)
         for index, level in enumerate(levels):
             self.level_totals[index] += level
         note = note_for_frequency(fundamental)
@@ -495,8 +526,11 @@ def voice_colour(levels: tuple[float, ...]) -> str:
 def vocal_range_label(take: TakeAnalysis) -> tuple[str, str]:
     """Report an observed register without diagnosing a singer from a short take."""
     values = sorted(take.sustained_frequencies)
+    if not values:
+        return "No held vowel yet", "Live notes work for speech. Hold one calm vowel for about a second to record an observed note; add low and high notes to assess singing range."
     if len(values) < 3:
-        return "No held vowel yet", "Live notes work for speech, but range results require one calm vowel held for about a second."
+        note = note_for_frequency(values[len(values) // 2])
+        return "Observed held note", f"You held {note}. One held vowel can confirm this note, but a singing range needs comfortable low and high notes too."
     low_frequency = values[max(0, round((len(values) - 1) * 0.05))]
     high_frequency = values[min(len(values) - 1, round((len(values) - 1) * 0.95))]
     low = 69 + 12 * math.log2(low_frequency / 440.0)
@@ -531,8 +565,200 @@ def instrument_range_label(take: TakeAnalysis) -> tuple[str, str]:
     return "Instrument range", f"Observed notes: {note_for_frequency(low)} to {note_for_frequency(high)}. No vocal classification is applied."
 
 
+def frequency_for_midi(midi: int) -> float:
+    return 440.0 * 2.0 ** ((midi - 69) / 12.0)
+
+
+def note_for_midi(midi: int) -> str:
+    return note_for_frequency(frequency_for_midi(midi))
+
+
+def percentile(values: list[float], fraction: float) -> float:
+    ordered = sorted(values)
+    if not ordered:
+        raise ValueError("Cannot calculate a percentile of an empty collection.")
+    return ordered[round((len(ordered) - 1) * fraction)]
+
+
+def speech_profile_label(take: TakeAnalysis) -> tuple[str, str]:
+    """Describe spoken pitch without pretending it identifies a voice type."""
+    values = take.speech_frequencies
+    if len(values) < SPEECH_PROFILE_FRAMES:
+        seconds = len(values) * FRAME_SIZE / SAMPLE_RATE
+        return "Speech sample too short", f"{seconds:.1f} seconds of voiced speech captured. Speak naturally for about 2–4 seconds for a spoken-pitch profile."
+    low, typical, high = percentile(values, 0.10), percentile(values, 0.50), percentile(values, 0.90)
+    return (
+        "Spoken-pitch profile",
+        f"Typical speaking pitch: {note_for_frequency(typical)} ({typical:.0f} Hz); observed speech span: {note_for_frequency(low)} to {note_for_frequency(high)}. This is not a voice type or gender label.",
+    )
+
+
+def _read_vlq(data: bytes, position: int) -> tuple[int, int]:
+    value = 0
+    for _ in range(4):
+        if position >= len(data):
+            raise ValueError("Unexpected end of MIDI variable-length value.")
+        byte = data[position]
+        position += 1
+        value = (value << 7) | (byte & 0x7F)
+        if not byte & 0x80:
+            return value, position
+    raise ValueError("Invalid MIDI variable-length value.")
+
+
+def parse_midi_bytes(data: bytes, source_name: str = "score.mid") -> ScoreAnalysis:
+    """Parse standard MIDI note events with no third-party dependency."""
+    if len(data) < 14 or data[:4] != b"MThd":
+        raise ValueError("This is not a standard MIDI file.")
+    header_size = struct.unpack(">I", data[4:8])[0]
+    if header_size < 6 or len(data) < 8 + header_size:
+        raise ValueError("The MIDI header is incomplete.")
+    track_count = struct.unpack(">H", data[10:12])[0]
+    position = 8 + header_size
+    notes: list[ScoreNote] = []
+    for track_number in range(track_count):
+        if position + 8 > len(data) or data[position:position + 4] != b"MTrk":
+            raise ValueError("The MIDI track data is incomplete.")
+        length = struct.unpack(">I", data[position + 4:position + 8])[0]
+        track_end = position + 8 + length
+        if track_end > len(data):
+            raise ValueError("The MIDI track length is invalid.")
+        position += 8
+        tick = 0
+        running_status: int | None = None
+        active: dict[tuple[int, int], list[int]] = {}
+        while position < track_end:
+            delta, position = _read_vlq(data, position)
+            tick += delta
+            if position >= track_end:
+                break
+            first = data[position]
+            if first < 0x80:
+                if running_status is None:
+                    raise ValueError("MIDI running status appeared without a status byte.")
+                status = running_status
+            else:
+                status = first
+                position += 1
+                if status < 0xF0:
+                    running_status = status
+            if status == 0xFF:
+                if position >= track_end:
+                    raise ValueError("MIDI meta event is incomplete.")
+                position += 1  # meta type
+                size, position = _read_vlq(data, position)
+                position += size
+                if position > track_end:
+                    raise ValueError("MIDI meta event extends beyond its track.")
+                continue
+            if status in (0xF0, 0xF7):
+                size, position = _read_vlq(data, position)
+                position += size
+                if position > track_end:
+                    raise ValueError("MIDI system event extends beyond its track.")
+                continue
+            if status >= 0xF0:
+                system_data_size = {0xF1: 1, 0xF2: 2, 0xF3: 1, 0xF6: 0, 0xF8: 0, 0xF9: 0, 0xFA: 0, 0xFB: 0, 0xFC: 0, 0xFD: 0, 0xFE: 0}.get(status)
+                if system_data_size is None or position + system_data_size > track_end:
+                    raise ValueError("MIDI system event is incomplete or unsupported.")
+                position += system_data_size
+                continue
+            event = status & 0xF0
+            channel = status & 0x0F
+            data_size = 1 if event in (0xC0, 0xD0) else 2
+            if position + data_size > track_end:
+                raise ValueError("MIDI channel event is incomplete.")
+            note = data[position]
+            velocity = data[position + 1] if data_size == 2 else 0
+            position += data_size
+            if channel == 9:
+                continue  # percussion does not describe singable pitch
+            key = (channel, note)
+            if event == 0x90 and velocity:
+                active.setdefault(key, []).append(tick)
+            elif event == 0x80 or (event == 0x90 and not velocity):
+                starts = active.get(key)
+                if starts:
+                    start = starts.pop(0)
+                    if tick > start:
+                        notes.append(ScoreNote(note, start, tick, track_number))
+        position = track_end
+    if not notes:
+        raise ValueError("No pitched MIDI notes were found. Percussion-only files cannot be assessed for singing.")
+    return ScoreAnalysis(source_name, "MIDI", tuple(notes), track_count)
+
+
+def parse_musescore_file(path: str) -> ScoreAnalysis:
+    """Read MuseScore's zipped .mscz or plain .mscx note pitches locally."""
+    try:
+        if path.lower().endswith(".mscz"):
+            with zipfile.ZipFile(path) as archive:
+                member = next((name for name in archive.namelist() if name.lower().endswith(".mscx")), None)
+                if member is None:
+                    raise ValueError("The MuseScore archive has no .mscx score data.")
+                source = archive.read(member)
+        else:
+            with open(path, "rb") as score_file:
+                source = score_file.read()
+        root = ElementTree.fromstring(source)
+    except (OSError, zipfile.BadZipFile, ElementTree.ParseError) as error:
+        raise ValueError(f"Could not read this MuseScore file: {error}") from error
+    notes: list[ScoreNote] = []
+    for index, element in enumerate(root.iter()):
+        if element.tag.rsplit("}", 1)[-1] != "Note":
+            continue
+        pitch = next((child.text for child in element if child.tag.rsplit("}", 1)[-1] == "pitch"), None)
+        if pitch is not None and pitch.strip().lstrip("-").isdigit():
+            midi = int(pitch)
+            if 0 <= midi <= 127:
+                notes.append(ScoreNote(midi, index, index + 1))
+    if not notes:
+        raise ValueError("No pitched MuseScore notes were found in this file.")
+    return ScoreAnalysis(os.path.basename(path), "MuseScore", tuple(notes), 1)
+
+
+def load_score_file(path: str) -> ScoreAnalysis:
+    suffix = os.path.splitext(path)[1].lower()
+    if suffix in (".mid", ".midi"):
+        with open(path, "rb") as score_file:
+            return parse_midi_bytes(score_file.read(), os.path.basename(path))
+    if suffix in (".mscz", ".mscx"):
+        return parse_musescore_file(path)
+    raise ValueError("Choose a MIDI (.mid/.midi) or MuseScore (.mscz/.mscx) score.")
+
+
+def score_singability(score: ScoreAnalysis, take: TakeAnalysis | None) -> tuple[str, str]:
+    """Compare score range with recorded evidence without declaring a voice type."""
+    if score.lowest_midi is None or score.highest_midi is None:
+        return "No pitched score notes", "This score does not contain pitched notes to compare."
+    required = f"{note_for_midi(score.lowest_midi)} to {note_for_midi(score.highest_midi)}"
+    if take is None:
+        return "Record a voice sample", f"Score span: {required}. Record a phrase or sustained low and high vowels, then compare it here."
+    speech_only = not take.sustained_frequencies
+    evidence = take.sustained_frequencies or take.speech_frequencies
+    if len(evidence) < 3:
+        return "Not enough voice evidence", f"Score span: {required}. Record several clear notes before checking fit."
+    low, high = percentile(evidence, 0.05), percentile(evidence, 0.95)
+    observed_low = 69 + 12 * math.log2(low / 440.0)
+    observed_high = 69 + 12 * math.log2(high / 440.0)
+    missing_low = max(0.0, score.lowest_midi - observed_low)
+    missing_high = max(0.0, score.highest_midi - observed_high)
+    observed = f"{note_for_frequency(low)} to {note_for_frequency(high)}"
+    if missing_low <= 1 and missing_high <= 1:
+        if speech_only:
+            return "Speech-only indication", f"Score span: {required}. Your observed speaking sample: {observed}. Speech does not prove sung high or low notes; record held vowels across the song's range for a stronger check."
+        return "Likely within this sample", f"Score span: {required}. Your observed sample: {observed}. This checks pitch range only; it does not rate technique, comfort, or endurance."
+    needs = []
+    if missing_low > 1:
+        needs.append(f"lower notes near {note_for_midi(score.lowest_midi)}")
+    if missing_high > 1:
+        needs.append(f"higher notes near {note_for_midi(score.highest_midi)}")
+    evidence_name = "speaking sample" if speech_only else "observed sample"
+    return "More range evidence needed", f"Score span: {required}; your {evidence_name}: {observed}. Try {' and '.join(needs)} gently before deciding whether the song fits."
+
+
 class HarmonicViewer(tk.Tk):
-    def __init__(self) -> None:
+    def __init__(self, initial_score_path: str | None = None) -> None:
         super().__init__()
         self.title("Harmonics analysis")
         self.theme_mode = system_theme()
@@ -556,6 +782,11 @@ class HarmonicViewer(tk.Tk):
         self.recording = False
         self.active_take: TakeAnalysis | None = None
         self.file_analysis_active = False
+        self.score_analysis_active = False
+        self.microphone_muted = False
+        self.last_voice_take: TakeAnalysis | None = None
+        self.loaded_score: ScoreAnalysis | None = None
+        self.initial_score_path = initial_score_path
         self.input_device: int | None = None
         self.capture_generation = 0
         self.capture_rate = float(SAMPLE_RATE)
@@ -577,12 +808,19 @@ class HarmonicViewer(tk.Tk):
         self.input_level = tk.StringVar(value="Input level: waiting for microphone")
         self.note_trail = tk.StringVar(value="Note trail: waiting")
         self.range_coach = tk.StringVar(value="Range coach: hold one comfortable vowel")
+        self.metronome_tempo = tk.StringVar(value="80")
+        self.metronome_status = tk.StringVar(value="Metronome: stopped")
+        self.metronome_running = False
+        self.metronome_beat = 0
+        self.metronome_after_id: str | None = None
 
         self._build_ui()
         self._draw_grid()
         self.start_capture()
         self.after(35, self.consume_frames)
         self.after(1_000, self.monitor_capture_health)
+        if self.initial_score_path:
+            self.after(250, lambda: self.open_score_path(self.initial_score_path or ""))
 
     def _build_ui(self) -> None:
         if self.theme_mode == "light":
@@ -820,6 +1058,52 @@ class HarmonicViewer(tk.Tk):
             pady=8,
         )
         self.mode_button.pack(side="left", padx=(8, 0))
+        utility_controls = tk.Frame(graph_panel, bg=studio)
+        utility_controls.pack(fill="x", pady=(8, 0))
+        self.score_button = tk.Button(
+            utility_controls,
+            text="Open MIDI / MuseScore",
+            command=self.choose_score_file,
+            bg="#315f78",
+            fg="#ffffff",
+            activebackground="#46829f",
+            activeforeground="#ffffff",
+            relief="flat",
+            padx=15,
+            pady=7,
+        )
+        self.score_button.pack(side="left")
+        self.mute_button = tk.Button(
+            utility_controls,
+            text="Mute microphone",
+            command=self.toggle_microphone_mute,
+            bg="#2b3943",
+            fg="#ffffff",
+            activebackground="#425563",
+            activeforeground="#ffffff",
+            relief="flat",
+            padx=12,
+            pady=7,
+        )
+        self.mute_button.pack(side="left", padx=(8, 0))
+        tk.Label(utility_controls, text="Tempo", fg=header_muted, bg=studio, font=("Sans", 9, "bold")).pack(side="left", padx=(16, 5))
+        self.metronome_entry = tk.Entry(utility_controls, textvariable=self.metronome_tempo, width=4, justify="center", bg=paper, fg=ink, insertbackground=ink)
+        self.metronome_entry.pack(side="left")
+        tk.Label(utility_controls, text="BPM", fg=header_muted, bg=studio, font=("Sans", 9)).pack(side="left", padx=(4, 8))
+        self.metronome_button = tk.Button(
+            utility_controls,
+            text="Start metronome",
+            command=self.toggle_metronome,
+            bg="#386b4b",
+            fg="#ffffff",
+            activebackground="#4b8d63",
+            activeforeground="#ffffff",
+            relief="flat",
+            padx=12,
+            pady=7,
+        )
+        self.metronome_button.pack(side="left")
+        tk.Label(utility_controls, textvariable=self.metronome_status, fg=header_muted, bg=studio, font=("Sans", 8), wraplength=250, justify="left").pack(side="left", padx=(10, 0))
         tk.Button(
             controls,
             text="Choose microphone",
@@ -884,6 +1168,12 @@ class HarmonicViewer(tk.Tk):
             self.record_button.configure(text="Finish take", bg="#b34048", activebackground="#d1555e")
         if self.file_analysis_active:
             self.file_button.configure(text="Reading sound file…", state="disabled")
+        if self.score_analysis_active:
+            self.score_button.configure(text="Reading score…", state="disabled")
+        if self.metronome_running:
+            self.metronome_button.configure(text="Stop metronome")
+        if self.microphone_muted:
+            self.mute_button.configure(text="Enable microphone")
         if self.frozen:
             self.freeze_button.configure(text="Resume live graph")
 
@@ -1079,6 +1369,11 @@ class HarmonicViewer(tk.Tk):
         return (MAX_DB - clipped) / (MAX_DB - MIN_DB) * SPECTRUM_HEIGHT
 
     def start_capture(self) -> None:
+        if self.microphone_muted:
+            self.running = False
+            self.status.set("Microphone muted")
+            self.detail.set("Microphone capture is off. Select Enable microphone when you are ready to listen again.")
+            return
         self.stop_capture()
         self.stop_event = threading.Event()
         self.capture_generation += 1
@@ -1109,6 +1404,28 @@ class HarmonicViewer(tk.Tk):
         if process and process.poll() is None:
             process.terminate()
         self.process = None
+
+    def toggle_microphone_mute(self) -> None:
+        """Stop the actual input stream so mute is meaningful for privacy."""
+        if self.microphone_muted:
+            self.microphone_muted = False
+            self.mute_button.configure(text="Mute microphone")
+            self.recording_status.set("Microphone enabled — reconnecting input.")
+            self.start_capture()
+            return
+        if self.recording:
+            self.finish_recording()
+        self.microphone_muted = True
+        self.stop_capture()
+        self.running = False
+        self.note_display.set("—")
+        self.base_note.set("Microphone muted")
+        self.tuning.set("")
+        self.recipe.set("Capture is stopped")
+        self.status.set("Microphone muted")
+        self.detail.set("Microphone capture is fully stopped. No microphone frames are being analysed.")
+        self.recording_status.set("Microphone muted. Enable it when ready.")
+        self.mute_button.configure(text="Enable microphone")
 
     def start_baseline_calibration(self) -> None:
         if self.recording:
@@ -1159,6 +1476,56 @@ class HarmonicViewer(tk.Tk):
             if not self.recording:
                 self.recording_status.set("")
 
+    def toggle_metronome(self) -> None:
+        """Run a simple local practice pulse without recording or uploading audio."""
+        if self.metronome_running:
+            self.stop_metronome()
+            return
+        try:
+            tempo = int(self.metronome_tempo.get())
+        except ValueError:
+            tempo = 0
+        if not 30 <= tempo <= 300:
+            self.metronome_status.set("Metronome: choose 30–300 BPM")
+            return
+        self.metronome_running = True
+        self.metronome_beat = 0
+        self.metronome_button.configure(text="Stop metronome")
+        self.metronome_status.set(f"Metronome: {tempo} BPM — beat 1")
+        self.metronome_tick()
+
+    def stop_metronome(self) -> None:
+        self.metronome_running = False
+        if self.metronome_after_id is not None:
+            self.after_cancel(self.metronome_after_id)
+            self.metronome_after_id = None
+        if hasattr(self, "metronome_button"):
+            self.metronome_button.configure(text="Start metronome")
+        self.metronome_status.set("Metronome: stopped")
+
+    def metronome_tick(self) -> None:
+        if not self.metronome_running:
+            return
+        try:
+            tempo = int(self.metronome_tempo.get())
+        except ValueError:
+            self.stop_metronome()
+            self.metronome_status.set("Metronome stopped: tempo must be a number.")
+            return
+        if not 30 <= tempo <= 300:
+            self.stop_metronome()
+            self.metronome_status.set("Metronome stopped: choose 30–300 BPM.")
+            return
+        self.metronome_beat = self.metronome_beat % 4 + 1
+        # Tk's bell uses the platform's configured alert sound and works on
+        # both packaged Windows builds and desktop Linux without a dependency.
+        try:
+            self.bell()
+        except tk.TclError:
+            pass
+        self.metronome_status.set(f"Metronome: {tempo} BPM — beat {self.metronome_beat}")
+        self.metronome_after_id = self.after(round(60_000 / tempo), self.metronome_tick)
+
     def gate_noise(self, levels: tuple[float, ...]) -> tuple[float, ...]:
         return gate_levels(levels, self.noise_floor)
 
@@ -1189,6 +1556,10 @@ class HarmonicViewer(tk.Tk):
         self.record_button.configure(text="Record a take", bg="#7b3038", activebackground="#a3434d")
         self.recording_status.set("")
         if take is not None:
+            if self.analysis_mode == "Voice":
+                self.last_voice_take = take
+                if self.loaded_score is not None:
+                    self.detail.set("Voice sample saved for the open score. Open its score summary to compare your observed notes.")
             self.show_take_summary("Your recorded take", take)
 
     def show_take_summary(self, title: str, take: TakeAnalysis) -> None:
@@ -1218,7 +1589,8 @@ class HarmonicViewer(tk.Tk):
         range_name, range_description = (instrument_range_label(take) if self.analysis_mode == "Instrument" else vocal_range_label(take))
         range_card = tk.Frame(details, bg=self.popup_card(), padx=14, pady=12, highlightthickness=1, highlightbackground=self.popup_border())
         range_card.pack(side="right", fill="y", padx=(14, 0))
-        tk.Label(range_card, text="Likely vocal range", fg=muted, bg=self.popup_card(), font=("Sans", 9, "bold")).pack(anchor="w")
+        range_heading = "Observed instrument range" if self.analysis_mode == "Instrument" else "Observed singing range"
+        tk.Label(range_card, text=range_heading, fg=muted, bg=self.popup_card(), font=("Sans", 9, "bold")).pack(anchor="w")
         tk.Label(range_card, text=range_name, fg=self.scope_harmonics, bg=self.popup_card(), font=("Sans", 18, "bold")).pack(anchor="w", pady=(2, 2))
         tk.Label(range_card, text=range_description, fg=ink, bg=self.popup_card(), font=("Sans", 8), wraplength=190, justify="left").pack(anchor="w")
         notes_area = tk.Frame(details, bg=background)
@@ -1241,6 +1613,14 @@ class HarmonicViewer(tk.Tk):
             wraplength=390,
             justify="left",
         ).pack(anchor="w", pady=(4, 0))
+
+        if self.analysis_mode == "Voice":
+            speech_name, speech_description = speech_profile_label(take)
+            speech_card = tk.Frame(body, bg=self.popup_card(), padx=14, pady=11, highlightthickness=1, highlightbackground=self.popup_border())
+            speech_card.pack(fill="x", pady=(0, 15))
+            tk.Label(speech_card, text="Natural speech", fg=muted, bg=self.popup_card(), font=("Sans", 9, "bold")).pack(anchor="w")
+            tk.Label(speech_card, text=speech_name, fg=self.scope_trace, bg=self.popup_card(), font=("Sans", 13, "bold")).pack(anchor="w", pady=(2, 2))
+            tk.Label(speech_card, text=speech_description, fg=ink, bg=self.popup_card(), font=("Sans", 9), wraplength=560, justify="left").pack(anchor="w")
 
         tk.Label(body, text="Whole-take harmonics", fg=muted, bg=background, font=("Sans", 10, "bold")).pack(anchor="w")
         tk.Label(
@@ -1306,7 +1686,13 @@ class HarmonicViewer(tk.Tk):
             return
         name, description = (instrument_range_label(take) if self.analysis_mode == "Instrument" else vocal_range_label(take))
         note_runs = [f"{run.name} ({run.frames * FRAME_SIZE / SAMPLE_RATE:.1f}s)" for run in take.note_runs if run.frames >= 2]
-        report = "\n".join((title, f"Version: {APP_VERSION}", f"Vocal range: {name}", description, f"Pitch steadiness: {take.pitch_stability()}", f"Notes: {', '.join(note_runs) or 'No sustained notes'}", "", "Audio is analysed locally and is not included in this report."))
+        range_heading = "Instrument range" if self.analysis_mode == "Instrument" else "Observed singing range"
+        report_lines = [title, f"Version: {APP_VERSION}", f"{range_heading}: {name}", description]
+        if self.analysis_mode == "Voice":
+            speech_name, speech_description = speech_profile_label(take)
+            report_lines.extend((f"Speech profile: {speech_name}", speech_description))
+        report_lines.extend((f"Pitch steadiness: {take.pitch_stability()}", f"Notes: {', '.join(note_runs) or 'No sustained notes'}", "", "Audio is analysed locally and is not included in this report."))
+        report = "\n".join(report_lines)
         try:
             with open(path, "w", encoding="utf-8") as output:
                 output.write(report + "\n")
@@ -1334,6 +1720,77 @@ class HarmonicViewer(tk.Tk):
 
     def popup_active(self) -> str:
         return "#d1ae72" if self.theme_mode == "light" else "#3a4954"
+
+    def choose_score_file(self) -> None:
+        if self.recording:
+            self.recording_status.set("Finish the current take before opening a score.")
+            return
+        if self.score_analysis_active:
+            return
+        file_path = filedialog.askopenfilename(
+            parent=self,
+            title="Open a MIDI or MuseScore score",
+            filetypes=(("MIDI and MuseScore", "*.mid *.midi *.mscz *.mscx"), ("All files", "*")),
+        )
+        if file_path:
+            self.open_score_path(file_path)
+
+    def open_score_path(self, file_path: str) -> None:
+        if not file_path:
+            return
+        if self.score_analysis_active:
+            return
+        self.score_analysis_active = True
+        if hasattr(self, "score_button"):
+            self.score_button.configure(text="Reading score…", state="disabled")
+        self.recording_status.set(f"Reading {os.path.basename(file_path)} locally…")
+        threading.Thread(target=self.analyze_score_file, args=(file_path,), daemon=True, name="score-file-analysis").start()
+
+    def analyze_score_file(self, file_path: str) -> None:
+        score: ScoreAnalysis | None = None
+        error: str | None = None
+        try:
+            score = load_score_file(file_path)
+        except Exception as exception:
+            error = str(exception)
+        self.after(0, self.finish_score_analysis, file_path, score, error)
+
+    def finish_score_analysis(self, file_path: str, score: ScoreAnalysis | None, error: str | None) -> None:
+        self.score_analysis_active = False
+        self.score_button.configure(text="Open MIDI / MuseScore", state="normal")
+        if error or score is None:
+            self.recording_status.set("Score analysis could not finish.")
+            self.detail.set(error or "The selected score could not be read.")
+            return
+        self.loaded_score = score
+        self.recording_status.set("")
+        self.detail.set(f"Read {os.path.basename(file_path)} locally. The score summary shows the written pitch span and compares your latest voice take when available.")
+        self.show_score_summary(score)
+
+    def show_score_summary(self, score: ScoreAnalysis) -> None:
+        background, ink, muted = self.popup_background(), self.popup_ink(), self.popup_muted()
+        summary = tk.Toplevel(self)
+        summary.title(f"Score check: {score.source_name}")
+        summary.configure(bg=background)
+        summary.resizable(False, False)
+        summary.transient(self)
+        body = tk.Frame(summary, bg=background, padx=20, pady=18)
+        body.pack(fill="both", expand=True)
+        tk.Label(body, text="Can I sing this song?", fg=ink, bg=background, font=("Sans", 19, "bold")).pack(anchor="w")
+        low = note_for_midi(score.lowest_midi) if score.lowest_midi is not None else "—"
+        high = note_for_midi(score.highest_midi) if score.highest_midi is not None else "—"
+        tk.Label(body, text=f"{score.source_name} · {score.format_name} · {len(score.notes)} pitched notes", fg=muted, bg=background, font=("Sans", 10)).pack(anchor="w", pady=(3, 13))
+        card = tk.Frame(body, bg=self.popup_card(), padx=14, pady=12, highlightthickness=1, highlightbackground=self.popup_border())
+        card.pack(fill="x")
+        tk.Label(card, text="Written pitch span", fg=muted, bg=self.popup_card(), font=("Sans", 9, "bold")).pack(anchor="w")
+        tk.Label(card, text=f"{low}  →  {high}", fg=self.scope_harmonics, bg=self.popup_card(), font=("Sans", 20, "bold")).pack(anchor="w", pady=(2, 3))
+        verdict, explanation = score_singability(score, self.last_voice_take)
+        tk.Label(card, text=verdict, fg=self.scope_trace, bg=self.popup_card(), font=("Sans", 13, "bold")).pack(anchor="w", pady=(8, 2))
+        tk.Label(card, text=explanation, fg=ink, bg=self.popup_card(), font=("Sans", 9), wraplength=560, justify="left").pack(anchor="w")
+        caution = "This uses every pitched, non-percussion MIDI track." if score.track_count > 1 else "This reads the written notes in the file."
+        tk.Label(body, text=f"{caution} Accompaniment or multiple parts can widen the score span; it is a range check, not a guarantee of vocal comfort or technique.", fg=muted, bg=background, font=("Sans", 9), wraplength=590, justify="left").pack(anchor="w", pady=(13, 0))
+        tk.Button(body, text="Refresh with latest voice take", command=lambda: (summary.destroy(), self.show_score_summary(score)), bg=self.popup_button(), fg=ink, activebackground=self.popup_active(), activeforeground=ink, relief="flat", padx=14, pady=7).pack(anchor="w", pady=(13, 0))
+        tk.Button(body, text="Close", command=summary.destroy, bg=self.popup_button(), fg=ink, activebackground=self.popup_active(), activeforeground=ink, relief="flat", padx=14, pady=7).pack(anchor="e", pady=(10, 0))
 
     def choose_sound_file(self) -> None:
         if self.recording:
@@ -1528,7 +1985,7 @@ class HarmonicViewer(tk.Tk):
 
     def monitor_capture_health(self) -> None:
         """Recover from a Windows endpoint that stays open but stops sending audio."""
-        if self.running and not self.stop_event.is_set() and time.monotonic() - self.last_frame_at > 4.0:
+        if not self.microphone_muted and self.running and not self.stop_event.is_set() and time.monotonic() - self.last_frame_at > 4.0:
             if self.mic_retries < 2:
                 self.mic_retries += 1
                 self.recording_status.set(f"Microphone stalled — reconnecting ({self.mic_retries}/2)…")
@@ -1551,17 +2008,20 @@ class HarmonicViewer(tk.Tk):
             except queue.Empty:
                 break
         if isinstance(latest, Exception):
-            self.running = False
-            self.note_display.set("—")
-            self.base_note.set("Microphone unavailable")
-            self.tuning.set("")
-            self.recipe.set("Harmonics unavailable")
-            self.status.set("Microphone error")
-            self.detail.set(str(latest))
-            if os.name == "nt" and self.mic_retries < 2:
-                self.mic_retries += 1
-                self.recording_status.set(f"Microphone retry {self.mic_retries}/2 in 2 seconds…")
-                self.after(2_000, self.start_capture)
+            if self.microphone_muted:
+                latest = None
+            else:
+                self.running = False
+                self.note_display.set("—")
+                self.base_note.set("Microphone unavailable")
+                self.tuning.set("")
+                self.recipe.set("Harmonics unavailable")
+                self.status.set("Microphone error")
+                self.detail.set(str(latest))
+                if os.name == "nt" and self.mic_retries < 2:
+                    self.mic_retries += 1
+                    self.recording_status.set(f"Microphone retry {self.mic_retries}/2 in 2 seconds…")
+                    self.after(2_000, self.start_capture)
         elif isinstance(latest, SpectrumFrame):
             self.mic_retries = 0
             self.latest_frame = latest
@@ -1641,7 +2101,7 @@ class HarmonicViewer(tk.Tk):
                 self.canvas.create_line(x, 48, x, SPECTRUM_HEIGHT - 20, fill=self.scope_harmonics, dash=(3, 5), tags="harmonics")
             noise_detail = " Noise baseline is on." if self.noise_floor is not None else ""
             self.detail.set(
-                f"Input level {frame.rms_db:.1f} dBFS · pitch confidence {confidence:.0%}. Speech can show a note, but only held vowels affect range.{noise_detail}"
+                f"Input level {frame.rms_db:.1f} dBFS · pitch confidence {confidence:.0%}. Speech builds a separate spoken-pitch profile; held vowels build singing-range evidence.{noise_detail}"
             )
         else:
             self.note_display.set("—")
@@ -1713,4 +2173,5 @@ class HarmonicViewer(tk.Tk):
 
 
 if __name__ == "__main__":
-    HarmonicViewer().mainloop()
+    score_argument = sys.argv[1] if len(sys.argv) == 2 and os.path.splitext(sys.argv[1])[1].lower() in (".mid", ".midi", ".mscz", ".mscx") else None
+    HarmonicViewer(score_argument).mainloop()

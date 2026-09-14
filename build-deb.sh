@@ -1,21 +1,21 @@
 #!/bin/sh
 set -eu
 name=harmonics-analysis
-version=1.6.4
+version=1.7.0
 stage="build/${name}_${version}_all"
 rm -rf "$stage"
 mkdir -p "$stage/DEBIAN" "$stage/usr/bin" "$stage/usr/lib/$name" "$stage/usr/share/applications"
 cat > "$stage/DEBIAN/control" <<'EOF'
 Package: harmonics-analysis
-Version: 1.6.4
+Version: 1.7.0
 Section: sound
 Priority: optional
 Architecture: all
 Depends: python3 (>= 3.10), python3-tk, alsa-utils, ffmpeg
 Maintainer: Harmonics Analysis
-Description: Local voice, harmonic, and sound-file analysis
- A local microphone and sound-file analyser with note, harmonic,
- recording, and voice-colour views.
+Description: Local voice, score, harmonic, and sound-file analysis
+ A local microphone, score, and sound-file analyser with note, harmonic,
+ recording, voice-colour, and metronome views.
 EOF
 install -m 755 harmonic-viewer.py harmonics-mcp.py "$stage/usr/lib/$name/"
 printf '%s\n' '#!/bin/sh' 'exec /usr/bin/python3 /usr/lib/harmonics-analysis/harmonic-viewer.py "$@"' > "$stage/usr/bin/harmonics-analysis"

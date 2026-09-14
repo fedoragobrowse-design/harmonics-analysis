@@ -52,11 +52,13 @@ While recording, every frame goes through `TakeAnalysis.add_frame`:
   consecutive equal notes extend a `NoteRun`, a change starts a new one;
 - the level at each of H1–H6 (bin `round(f·h·FRAME_SIZE/SAMPLE_RATE)`) feeds
   `harmonic_totals`/`harmonic_counts`, giving `harmonic_averages()`;
+- every clear voiced pitch is also kept in a separate speech corpus. After
+  enough conversational speech, its 10th/50th/90th percentiles form a
+  spoken-pitch profile. It is explicitly not a gender or voice-type label;
 - only a sustained, tightly clustered vowel-like pitch run contributes to a
-  vocal range; short speech-like pitch changes remain visible live but do not
-  skew the summary. The 5th–95th
-  percentile of those sustained pitches produces the cautious range label,
-  rather than classifying a voice from its average pitch.
+  singing range; short speech-like pitch changes do not skew that result. The
+  5th–95th percentile of sustained pitches produces the cautious observed
+  range rather than classifying a person from their average pitch.
 
 `show_take_summary` renders the finished take: note sequence with durations,
 observed range, an H1–H6 bar chart, and overall voice colour
@@ -65,6 +67,21 @@ observed range, an H1–H6 bar chart, and overall voice colour
 
 Sound files run the identical pipeline (`analyze_sound_file`): FFmpeg decodes
 to the same raw PCM format and the frames feed a fresh `TakeAnalysis`.
+
+## Score analysis and practice tools
+
+`load_score_file` accepts standard MIDI (`.mid`/`.midi`) and MuseScore
+(`.mscz`/`.mscx`) files with only the Python standard library. MIDI parsing
+tracks note-on/off pairs and ignores channel 10 percussion; MuseScore parsing
+reads `<Note><pitch>` values from XML. `score_singability` compares the score's
+written lowest/highest notes against a recorded voice take's observed 5th–95th
+percentile. It deliberately reports missing evidence rather than inferring a
+voice type. Multi-part scores may include accompaniment, so the UI calls out
+that caveat.
+
+The UI metronome is a Tk scheduled four-beat pulse (30–300 BPM) using the
+platform alert sound. “Mute microphone” calls `stop_capture`, terminating the
+input stream/process rather than merely hiding its display.
 
 ## Threading and the UI
 
@@ -82,7 +99,8 @@ to the same raw PCM format and the frames feed a fresh `TakeAnalysis`.
 - `stop_capture` terminates the child process; the window close protocol
   routes through `quit_app` so the recorder never outlives the GUI.
 - A capture-health timer detects a stalled source, reports a useful status,
-  and makes a bounded restart attempt. This is especially important for
+  and makes a bounded restart attempt. It is disabled while the user has
+  muted the microphone. This is especially important for
   Windows shared-mode devices that can disappear or change format mid-session.
 
 ## UI structure
@@ -90,9 +108,9 @@ to the same raw PCM format and the frames feed a fresh `TakeAnalysis`.
 `HarmonicViewer(tk.Tk)` builds its widgets in `_build_ui`: a spectrum canvas
 (`draw_spectrum` — grid, dB levels, harmonic guides at multiples of the
 detected fundamental), a voice-profile strip (`draw_voice_profile`), and the
-control column (quiet baseline, record a take, identify a sound file, freeze,
-theme toggle). Theme is read from the OS (`system_theme`: Windows registry,
-else `GTK_THEME`).
+control column (quiet baseline, record a take, sound file, MIDI/MuseScore,
+metronome, true microphone mute, freeze, theme toggle). Theme is read from the
+OS (`system_theme`: Windows registry, else `GTK_THEME`).
 
 ## Packaging
 

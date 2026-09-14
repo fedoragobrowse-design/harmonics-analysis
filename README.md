@@ -22,9 +22,15 @@ computer.
   device's native shared-mode rate and normalizes it for the analyser.
 - **Pitch confidence** — harmonic evidence ranks each live note as clear or
   tentative, rather than pretending a noisy/speech frame is a certain pitch.
-- **Wide held-note tracking** — low and high sustained vowels are supported
-  from 55–1,200 Hz; short speech-like changes are shown live but excluded from
-  vocal-range labels.
+- **Speech and singing are separate** — a 3–5 second conversational sample
+  produces a spoken-pitch profile, while held vowels build singing-range
+  evidence. Neither result assigns gender or a fixed voice type from one note.
+- **MIDI and MuseScore song check** — open `.mid`, `.midi`, `.mscz`, or `.mscx`
+  files to see their written span and compare it with a recorded voice take.
+  Multi-part scores can include accompaniment, so the result remains a careful
+  range check rather than a promise of comfort or technique.
+- **Practice metronome and real microphone mute** — set 30–300 BPM for a local
+  four-beat pulse, and stop the actual microphone capture until enabled again.
 - **Verified updates** — the optional updater checks the latest stable GitHub
   Release, verifies its SHA-256 checksum, replaces the Windows `.exe` on
   restart, or opens Linux's normal system authorization dialog to install a
@@ -39,8 +45,8 @@ computer.
   per-bin noise floor; levels below it are gated out of the analysis.
 - **Record a take** — while recording, every voiced frame is accumulated into
   a take; when you finish, a summary shows the notes you sang in sequence,
-  a cautious sustained-range label (bass, baritone, tenor, alto, or soprano),
-  pitch steadiness, and average energy at H1–H6.
+  observed singing range, speech profile, pitch steadiness, and average energy
+  at H1–H6.
 - **Identify a sound file** — analyse any file FFmpeg can decode (WAV, MP3,
   FLAC, OGG, …) through the same pipeline and get the same take summary.
 - **Freeze graph** — pause the drawing while capture continues.
@@ -98,7 +104,7 @@ Details, constants, and the data flow are in
 
 ## Building
 
-- Debian package: `./build-deb.sh` → `harmonics-analysis_1.6.4_all.deb`
+- Debian package: `./build-deb.sh` → `harmonics-analysis_1.7.0_all.deb`
 - Windows exe: see [`docs/BUILDING.md`](docs/BUILDING.md)
 - CI: pushing a tag `v*` runs `.github/workflows/build-release.yml`, which
   builds both artefacts, SHA-256 checksum sidecars, and the GitHub Release that
@@ -120,10 +126,11 @@ release-artifacts/      output of the last release build (not tracked)
 
 ## MCP server
 
-`harmonics-mcp.py` is a local stdio MCP server. It exposes version/settings and
-analysis of one client-supplied 48 kHz PCM frame; it never opens the microphone,
-watches files, uploads audio, or retains input. See [`docs/MCP.md`](docs/MCP.md)
-for configuration.
+`harmonics-mcp.py` is a local stdio MCP server. It exposes version/settings,
+analysis of one client-supplied 48 kHz PCM frame, local MIDI/MuseScore range
+inspection, a song-range comparison, and an explicit tool to launch the local
+desktop app. It never starts recording or uploads audio. See
+[`docs/MCP.md`](docs/MCP.md) for configuration.
 
 ## Privacy
 
